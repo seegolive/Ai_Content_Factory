@@ -1,9 +1,6 @@
 "use client";
-import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, CheckCircle, AlertCircle } from "lucide-react";
 import { videosApi } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 export function StatusBar() {
   const { data: videos } = useQuery({
@@ -17,16 +14,59 @@ export function StatusBar() {
   if (processing.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-xs">
+    <div style={{
+      position: "fixed",
+      bottom: 16,
+      right: 16,
+      zIndex: 50,
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      maxWidth: 300,
+    }}>
       {processing.map((v) => (
         <div
           key={v.id}
-          className="glass-card px-4 py-3 flex items-center gap-3 text-sm animate-fade-in"
+          style={{
+            background: "var(--bg-2)",
+            border: "1px solid var(--border-2)",
+            borderRadius: "var(--r-md)",
+            padding: "10px 14px",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
+            backdropFilter: "blur(20px)",
+          }}
         >
-          <Loader2 className="w-4 h-4 text-primary animate-spin flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="truncate text-foreground font-medium">{v.title ?? "Processing…"}</p>
-            <p className="text-foreground-muted text-xs">{v.checkpoint ?? "Queued"}</p>
+          {/* Spinner */}
+          <div className="spin" style={{
+            width: 14,
+            height: 14,
+            borderRadius: "50%",
+            border: "2px solid rgba(124,111,255,0.25)",
+            borderTopColor: "var(--primary)",
+            flexShrink: 0,
+          }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{
+              fontSize: 12.5,
+              fontWeight: 500,
+              color: "var(--text-1)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}>
+              {v.title ?? "Processing…"}
+            </div>
+            <div style={{
+              fontSize: 11,
+              color: "var(--text-3)",
+              fontFamily: "var(--font-mono)",
+              marginTop: 1,
+            }}>
+              {v.checkpoint ?? "Queued"}
+            </div>
           </div>
         </div>
       ))}

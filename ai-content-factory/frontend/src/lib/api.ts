@@ -107,4 +107,49 @@ export const clipsApi = {
   streamUrl: (clipId: string) => `${BASE_URL}/api/v1/clips/${clipId}/stream`,
 };
 
+// ── YouTube ──────────────────────────────────────────────────────────────────
+
+export interface YTVideoStat {
+  video_id: string;
+  title: string;
+  published_at: string;
+  thumbnail_url: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+  duration_seconds: number;
+}
+
+export interface YTChannelAnalytics {
+  channel_id: string;
+  channel_name: string;
+  thumbnail_url: string | null;
+  subscriber_count: number;
+  total_views: number;
+  total_videos: number;
+  recent_videos: YTVideoStat[];
+  top_videos: YTVideoStat[];
+}
+
+export const youtubeApi = {
+  getStats: () => api.get<{
+    connected: boolean;
+    accounts: Array<{
+      channel_id: string;
+      channel_name?: string;
+      subscriber_count?: number;
+      thumbnail_url?: string;
+      connected: boolean;
+      error?: string;
+    }>;
+  }>("/youtube/stats"),
+
+  getAnalytics: () =>
+    api.get<{
+      connected: boolean;
+      analytics: YTChannelAnalytics | null;
+      error?: string | null;
+    }>("/youtube/analytics"),
+};
+
 export default api;

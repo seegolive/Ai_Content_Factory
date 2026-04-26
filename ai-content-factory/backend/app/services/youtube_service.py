@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from loguru import logger
 
@@ -17,6 +17,32 @@ class ChannelInfo:
     channel_name: str
     subscriber_count: int
     thumbnail_url: Optional[str]
+
+
+@dataclass
+class VideoStat:
+    video_id: str
+    title: str
+    published_at: str
+    thumbnail_url: Optional[str]
+    views: int
+    likes: int
+    comments: int
+    duration_seconds: int
+
+
+@dataclass
+class ChannelAnalytics:
+    channel_id: str
+    channel_name: str
+    thumbnail_url: Optional[str]
+    subscriber_count: int
+    total_views: int
+    total_videos: int
+    # per-video stats for the latest N videos
+    recent_videos: List[VideoStat] = field(default_factory=list)
+    # top 5 by views
+    top_videos: List[VideoStat] = field(default_factory=list)
 
 
 class YouTubeService:
@@ -46,6 +72,110 @@ class YouTubeService:
                 channel_name=item["snippet"]["title"],
                 subscriber_count=int(item["statistics"].get("subscriberCount", 0)),
                 thumbnail_url=item["snippet"]["thumbnails"].get("default", {}).get("url"),
+            )
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _fetch)
+
+    async def get_channel_analytics(self, access_token: str, max_videos: int = 20) -> ChannelAnalytics:
+        """Fetch channel KPIs + per-video stats using youtube.readonly scope."""
+        import asyncio
+        import re
+
+        def _iso8601_to_seconds(duration: str) -> int:
+            """Convert ISO 8601 duration (PT4M13S) to seconds."""
+            match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration)
+            if not match:
+                return 0
+            h = int(match.group(1) or 0)
+            m = int(match.group(2) or 0)
+            s = int(match.group(3) or 0)
+            return h * 3600 + m * 60 + s
+
+        def _fetch():
+            service = self._build_service(access_token)
+
+            # 1. Channel-level stats
+            ch_resp = service.channels().list(
+                part="snippet,statistics,contentDetails", mine=True
+            ).execute()
+            if not ch_resp.get("items"):
+                raise ValueError("No YouTube channel found for this account")
+            ch = ch_resp["items"][0]
+            ch_stats = ch["statistics"]
+            uploads_playlist_id = ch["contentDetails"]["relatedPlaylists"]["uploads"]
+            channel_id = ch["id"]
+            channel_name = ch["snippet"]["title"]
+            thumbnail_url = ch["snippet"]["thumbnails"].get("default", {}).get("url")
+            subscriber_count = int(ch_stats.get("subscriberCount", 0))
+            total_views = int(ch_stats.get("viewCount", 0))
+            total_videos = int(ch_stats.get("videoCount", 0))
+
+            # 2. Fetch latest video IDs from uploads playlist
+            video_ids: list[str] = []
+            next_page = None
+            while len(video_ids) < max_videos:
+                pl_kwargs: dict = dict(
+                    part="contentDetails",
+                    playlistId=uploads_playlist_id,
+                    maxResults=min(50, max_videos - len(video_ids)),
+                )
+                if next_page:
+                    pl_kwargs["pageToken"] = next_page
+                pl_resp = service.playlistItems().list(**pl_kwargs).execute()
+                for item in pl_resp.get("items", []):
+                    vid_id = item["contentDetails"]["videoId"]
+                    video_ids.append(vid_id)
+                next_page = pl_resp.get("nextPageToken")
+                if not next_page:
+                    break
+
+            if not video_ids:
+                return ChannelAnalytics(
+                    channel_id=channel_id,
+                    channel_name=channel_name,
+                    thumbnail_url=thumbnail_url,
+                    subscriber_count=subscriber_count,
+                    total_views=total_views,
+                    total_videos=total_videos,
+                )
+
+            # 3. Fetch per-video stats in batches of 50
+            video_stats: list[VideoStat] = []
+            for i in range(0, len(video_ids), 50):
+                batch = video_ids[i:i + 50]
+                v_resp = service.videos().list(
+                    part="snippet,statistics,contentDetails",
+                    id=",".join(batch),
+                ).execute()
+                for v in v_resp.get("items", []):
+                    vs = v["statistics"]
+                    video_stats.append(VideoStat(
+                        video_id=v["id"],
+                        title=v["snippet"]["title"],
+                        published_at=v["snippet"]["publishedAt"],
+                        thumbnail_url=v["snippet"]["thumbnails"].get("medium", {}).get("url"),
+                        views=int(vs.get("viewCount", 0)),
+                        likes=int(vs.get("likeCount", 0)),
+                        comments=int(vs.get("commentCount", 0)),
+                        duration_seconds=_iso8601_to_seconds(
+                            v["contentDetails"].get("duration", "PT0S")
+                        ),
+                    ))
+
+            # Sort by published date for "recent", by views for "top"
+            recent = sorted(video_stats, key=lambda v: v.published_at, reverse=True)
+            top = sorted(video_stats, key=lambda v: v.views, reverse=True)[:5]
+
+            return ChannelAnalytics(
+                channel_id=channel_id,
+                channel_name=channel_name,
+                thumbnail_url=thumbnail_url,
+                subscriber_count=subscriber_count,
+                total_views=total_views,
+                total_videos=total_videos,
+                recent_videos=recent,
+                top_videos=top,
             )
 
         loop = asyncio.get_event_loop()

@@ -5,7 +5,7 @@ import {
   useQueryClient,
   UseQueryOptions,
 } from "@tanstack/react-query";
-import { clipsApi, videosApi } from "@/lib/api";
+import { clipsApi, videosApi, youtubeApi, type YTChannelAnalytics } from "@/lib/api";
 import type { Clip, Video, VideoDetail } from "@/types";
 
 // ── Videos ──────────────────────────────────────────────────────────────────
@@ -110,5 +110,25 @@ export function useUpdateClip() {
       data: { title?: string; description?: string; hashtags?: string[] };
     }) => clipsApi.update(clipId, data).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["clips"] }),
+  });
+}
+
+// ── YouTube ──────────────────────────────────────────────────────────────────
+
+export function useYoutubeStats() {
+  return useQuery({
+    queryKey: ["youtubeStats"],
+    queryFn: () => youtubeApi.getStats().then((r) => r.data),
+    staleTime: 5 * 60_000, // 5 min cache
+    retry: 1,
+  });
+}
+
+export function useYoutubeAnalytics() {
+  return useQuery({
+    queryKey: ["youtubeAnalytics"],
+    queryFn: () => youtubeApi.getAnalytics().then((r) => r.data),
+    staleTime: 5 * 60_000, // 5 min cache
+    retry: 1,
   });
 }

@@ -1,40 +1,48 @@
 "use client";
-import { Bell } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 
 interface HeaderProps {
-  title?: string;
   breadcrumb?: { label: string; href?: string }[];
+  actions?: React.ReactNode;
 }
 
-export function Header({ title, breadcrumb }: HeaderProps) {
+function useClock() {
+  const [display, setDisplay] = useState("");
+  useEffect(() => {
+    const update = () => {
+      const now = new Date();
+      const date = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+      setDisplay(`${date}  ${time}`);
+    };
+    update();
+    const t = setInterval(update, 10_000);
+    return () => clearInterval(t);
+  }, []);
+  return display;
+}
+
+export function Header({ breadcrumb, actions }: HeaderProps) {
+  const clock = useClock();
+
   return (
-    <header className="h-14 flex items-center justify-between px-6 border-b border-border bg-surface/80 backdrop-blur-sm">
+    <header className="app-header">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm">
+      <div className="header-breadcrumb">
         {breadcrumb?.map((crumb, i) => (
-          <span key={i} className="flex items-center gap-2">
-            {i > 0 && <span className="text-foreground-muted">/</span>}
-            <span
-              className={cn(
-                i === breadcrumb.length - 1
-                  ? "text-foreground font-medium"
-                  : "text-foreground-muted"
-              )}
-            >
+          <span key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {i > 0 && <span className="breadcrumb-sep">/</span>}
+            <span className={i === (breadcrumb.length - 1) ? "breadcrumb-active" : "breadcrumb-parent"}>
               {crumb.label}
             </span>
           </span>
-        )) ?? (
-          <span className="text-foreground font-medium font-display">{title}</span>
-        )}
+        ))}
       </div>
 
-      {/* Right side */}
-      <div className="flex items-center gap-3">
-        <button className="relative p-2 rounded-lg text-foreground-muted hover:text-foreground hover:bg-muted/50 transition-colors">
-          <Bell className="w-4 h-4" />
-        </button>
+      {/* Right */}
+      <div className="header-right">
+        {actions}
+        {clock && <span className="header-time">{clock}</span>}
       </div>
     </header>
   );

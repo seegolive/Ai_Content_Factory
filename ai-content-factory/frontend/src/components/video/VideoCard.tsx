@@ -1,10 +1,18 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { MoreVertical, Trash2, RefreshCw, Eye } from "lucide-react";
-import { cn, formatDuration, formatFileSize, formatRelativeTime, getStatusColor } from "@/lib/utils";
+import { Play, Eye, Trash2, Clock, Layers } from "lucide-react";
+import { formatDuration, formatRelativeTime } from "@/lib/utils";
 import { useDeleteVideo } from "@/lib/queries";
 import { toast } from "sonner";
 import type { Video } from "@/types";
+
+const STATUS_MAP: Record<string, { dot: string; label: string; bg: string }> = {
+  processing: { dot: "var(--primary)",   label: "Processing", bg: "var(--primary-dim)" },
+  review:     { dot: "var(--warning)",   label: "Review",     bg: "var(--warning-dim)" },
+  done:       { dot: "var(--secondary)", label: "Done",       bg: "var(--secondary-dim)" },
+  error:      { dot: "var(--danger)",    label: "Error",      bg: "var(--danger-dim)" },
+  queued:     { dot: "var(--text-3)",    label: "Queued",     bg: "rgba(255,255,255,0.04)" },
+};
 
 interface VideoCardProps {
   video: Video;
@@ -13,6 +21,7 @@ interface VideoCardProps {
 export function VideoCard({ video }: VideoCardProps) {
   const router = useRouter();
   const { mutateAsync: deleteVideo } = useDeleteVideo();
+  const s = STATUS_MAP[video.status] ?? STATUS_MAP.queued;
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -27,50 +36,75 @@ export function VideoCard({ video }: VideoCardProps) {
 
   return (
     <div
+      className="video-card"
+      role="button"
+      tabIndex={0}
       onClick={() => router.push(`/videos/${video.id}`)}
-      className="glass-card p-4 cursor-pointer hover:border-primary/30 transition-all duration-200 group"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          router.push(`/videos/${video.id}`);
+        }
+      }}
     >
-      {/* Thumbnail placeholder */}
-      <div className="w-full aspect-video bg-muted rounded-lg mb-3 flex items-center justify-center overflow-hidden">
-        <div className="text-foreground-muted text-xs">No preview</div>
+      {/* Thumbnail */}
+      <div className="video-card-thumb">
+        <Play size={18} color="var(--text-4)" />
+        <div
+          className="status-pill"
+          role="status"
+          aria-label={`Status: ${s.label}`}
+          style={{
+            position: "absolute", top: 8, right: 8,
+            background: s.bg, fontSize: 10,
+          }}
+        >
+          <div className="status-dot" style={{ background: s.dot }} />
+          <span style={{ color: s.dot }}>{s.label}</span>
+        </div>
       </div>
 
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-foreground truncate">
-            {video.title ?? "Untitled"}
-          </p>
-          <p className="text-xs text-foreground-muted mt-0.5">
-            {formatRelativeTime(video.created_at)} ·{" "}
-            {formatDuration(video.duration_seconds)} ·{" "}
-            {video.clips_count} clips
-          </p>
+      {/* Body */}
+      <div className="video-card-body">
+        <div className="video-card-title">{video.title ?? "Untitled"}</div>
+        <div className="video-card-meta">
+          <Clock size={10} style={{ display: "inline", marginRight: 3 }} />
+          {formatDuration(video.duration_seconds)}
+          &nbsp;&middot;&nbsp;
+          {video.created_at ? formatRelativeTime(video.created_at) : "Unknown"}
         </div>
 
-        <span
-          className={cn(
-            "flex-shrink-0 text-xs px-2 py-1 rounded-full font-medium",
-            getStatusColor(video.status)
-          )}
-        >
-          {video.status}
-        </span>
-      </div>
+        <div className="video-card-footer">
+          <span style={{
+            display: "flex", alignItems: "center", gap: 5,
+            fontSize: 12, fontFamily: "var(--font-mono)",
+            color: video.clips_count > 0 ? "var(--secondary)" : "var(--text-4)",
+          }}>
+            <Layers size={11} />
+            {video.clips_count} clip{video.clips_count !== 1 && "s"}
+          </span>
 
-      {/* Actions */}
-      <div className="mt-3 pt-3 border-t border-border flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          onClick={(e) => { e.stopPropagation(); router.push(`/videos/${video.id}`); }}
-          className="flex items-center gap-1.5 text-xs text-foreground-muted hover:text-foreground px-2 py-1 rounded hover:bg-muted/50 transition-colors"
-        >
-          <Eye className="w-3 h-3" /> View Clips
-        </button>
-        <button
-          onClick={handleDelete}
-          className="flex items-center gap-1.5 text-xs text-destructive hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 transition-colors ml-auto"
-        >
-          <Trash2 className="w-3 h-3" /> Delete
-        </button>
+          <div className="video-card-actions">
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={(e) => { e.stopPropagation(); router.push(`/videos/${video.id}`); }}
+              title="View clips"
+              aria-label="View clips"
+            >
+              <Eye size={13} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn danger"
+              onClick={handleDelete}
+              title="Delete video"
+              aria-label="Delete video"
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

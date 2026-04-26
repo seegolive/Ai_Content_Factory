@@ -22,6 +22,7 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    broker_connection_retry_on_startup=True,
     result_expires=604800,  # 7 days
     task_max_retries=3,
     task_acks_late=True,
