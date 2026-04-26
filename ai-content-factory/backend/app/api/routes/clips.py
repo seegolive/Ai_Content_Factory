@@ -1,0 +1,194 @@
+"""Clips review and management routes."""
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
+from loguru import logger
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.dependencies import get_current_user, get_db
+from app.models.clip import Clip
+from app.models.user import User
+from app.models.video import Video
+from app.schemas.clip import (
+    ClipBulkReviewRequest,
+    ClipOut,
+    ClipPublishRequest,
+    ClipReviewRequest,
+    ClipUpdateRequest,
+)
+
+router = APIRouter()
+
+
+async def _get_clip_or_404(
+    clip_id: uuid.UUID,
+    user_id: uuid.UUID,
+    db: AsyncSession,
+) -> Clip:
+    result = await db.execute(
+        select(Clip).where(Clip.id == clip_id, Clip.user_id == user_id)
+    )
+    clip = result.scalar_one_or_none()
+    if not clip:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found")
+    return clip
+
+
+@router.get("/videos/{video_id}/clips", response_model=List[ClipOut])
+async def list_clips(
+    video_id: uuid.UUID,
+    qc_status: Optional[str] = Query(None),
+    review_status: Optional[str] = Query(None),
+    viral_score_min: Optional[int] = Query(None, ge=0, le=100),
+    sort: str = Query("viral_score", regex="^(viral_score|created_at)$"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List clips for a video."""
+    # Verify video belongs to user
+    video_result = await db.execute(
+        select(Video.id).where(Video.id == video_id, Video.user_id == current_user.id)
+    )
+    if not video_result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+
+    query = select(Clip).where(Clip.video_id == video_id)
+    if qc_status:
+        query = query.where(Clip.qc_status == qc_status)
+    if review_status:
+        query = query.where(Clip.review_status == review_status)
+    if viral_score_min is not None:
+        query = query.where(Clip.viral_score >= viral_score_min)
+
+    if sort == "viral_score":
+        query = query.order_by(Clip.viral_score.desc().nulls_last())
+    else:
+        query = query.order_by(Clip.created_at.desc())
+
+    result = await db.execute(query)
+    clips = result.scalars().all()
+    return [ClipOut.model_validate(c) for c in clips]
+
+
+@router.patch("/clips/{clip_id}/review", response_model=ClipOut)
+async def review_clip(
+    clip_id: uuid.UUID,
+    body: ClipReviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve or reject a single clip."""
+    clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    clip.review_status = "approved" if body.action == "approve" else "rejected"
+    clip.reviewed_at = datetime.now(timezone.utc)
+    await db.commit()
+    return ClipOut.model_validate(clip)
+
+
+@router.post("/clips/bulk-review")
+async def bulk_review(
+    body: ClipBulkReviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk approve or reject clips."""
+    new_status = "approved" if body.action == "approve" else "rejected"
+    now = datetime.now(timezone.utc)
+
+    await db.execute(
+        update(Clip)
+        .where(Clip.id.in_(body.clip_ids), Clip.user_id == current_user.id)
+        .values(review_status=new_status, reviewed_at=now)
+    )
+    await db.commit()
+    return {"updated": len(body.clip_ids), "review_status": new_status}
+
+
+@router.patch("/clips/{clip_id}", response_model=ClipOut)
+async def update_clip(
+    clip_id: uuid.UUID,
+    body: ClipUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit clip metadata before publishing."""
+    clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    if body.title is not None:
+        clip.title = body.title
+    if body.description is not None:
+        clip.description = body.description
+    if body.hashtags is not None:
+        clip.hashtags = body.hashtags
+    await db.commit()
+    return ClipOut.model_validate(clip)
+
+
+@router.post("/clips/{clip_id}/publish")
+async def publish_clip(
+    clip_id: uuid.UUID,
+    body: ClipPublishRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger distribution to selected platforms."""
+    clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    if clip.review_status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Clip must be approved before publishing",
+        )
+
+    try:
+        from app.workers.tasks.distribute import distribute_clip
+        task = distribute_clip.delay(
+            str(clip_id),
+            body.platforms,
+            str(body.youtube_account_id) if body.youtube_account_id else None,
+        )
+        return {"publish_job_id": task.id, "platforms": body.platforms}
+    except Exception as e:
+        logger.error(f"Failed to queue distribution for clip {clip_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to queue publish"
+        )
+
+
+@router.get("/clips/{clip_id}/stream")
+async def stream_clip(
+    clip_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream clip file with Range support for video player seek."""
+    clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    if not clip.clip_path or not os.path.exists(clip.clip_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found")
+
+    file_size = os.path.getsize(clip.clip_path)
+
+    def iterfile(path: str, start: int = 0, end: int = None):
+        end = end or file_size - 1
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = end - start + 1
+            chunk_size = 65536
+            while remaining > 0:
+                data = f.read(min(chunk_size, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    return StreamingResponse(
+        iterfile(clip.clip_path),
+        media_type="video/mp4",
+        headers={
+            "Content-Length": str(file_size),
+            "Accept-Ranges": "bytes",
+        },
+    )

@@ -1,0 +1,51 @@
+"""Clip Pydantic schemas."""
+import uuid
+from datetime import datetime
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
+
+
+class ClipOut(BaseModel):
+    id: uuid.UUID
+    video_id: uuid.UUID
+    title: Optional[str] = None
+    description: Optional[str] = None
+    start_time: float
+    end_time: float
+    duration: Optional[float] = None
+    viral_score: Optional[int] = None
+    hook_text: Optional[str] = None
+    hashtags: list[str] = []
+    thumbnail_path: Optional[str] = None
+    clip_path: Optional[str] = None
+    format: str
+    qc_status: str
+    qc_issues: list[str] = []
+    review_status: str
+    reviewed_at: Optional[datetime] = None
+    platform_status: dict = {}
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ClipReviewRequest(BaseModel):
+    action: Literal["approve", "reject"]
+    note: Optional[str] = None
+
+
+class ClipBulkReviewRequest(BaseModel):
+    clip_ids: list[uuid.UUID] = Field(min_length=1)
+    action: Literal["approve", "reject"]
+
+
+class ClipUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    hashtags: Optional[list[str]] = None
+
+
+class ClipPublishRequest(BaseModel):
+    platforms: list[str] = Field(default=["youtube"])
+    youtube_account_id: Optional[uuid.UUID] = None

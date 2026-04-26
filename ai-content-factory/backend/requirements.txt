@@ -1,0 +1,53 @@
+# Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+psycopg2-binary==2.9.10
+
+# Redis & Celery
+redis==5.2.0
+celery[redis]==5.4.0
+flower==2.0.1
+
+# AI / ML
+faster-whisper==1.1.0
+# Install torch separately with CUDA:
+# pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
+
+# HTTP Client
+httpx==0.28.0
+aiohttp==3.11.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+google-auth==2.37.0
+google-auth-oauthlib==1.2.1
+
+# Google API
+google-api-python-client==2.154.0
+
+# Video Processing (ffmpeg-python is optional; we call ffmpeg via subprocess)
+ffmpeg-python==0.2.0
+
+# Notification
+python-telegram-bot==21.9
+sendgrid==6.11.0
+
+# Config & Utils
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+loguru==0.7.3
+tenacity==9.0.0
+
+# Storage (future S3/R2)
+boto3==1.35.0
+
+# Testing
+pytest==8.3.0
+pytest-asyncio==0.24.0
