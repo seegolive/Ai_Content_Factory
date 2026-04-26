@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 interface HeaderProps {
@@ -32,9 +33,13 @@ export function Header({ breadcrumb, actions }: HeaderProps) {
         {breadcrumb?.map((crumb, i) => (
           <span key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {i > 0 && <span className="breadcrumb-sep">/</span>}
-            <span className={i === (breadcrumb.length - 1) ? "breadcrumb-active" : "breadcrumb-parent"}>
-              {crumb.label}
-            </span>
+            {i === breadcrumb.length - 1 ? (
+              <span className="breadcrumb-active">{crumb.label}</span>
+            ) : crumb.href ? (
+              <Link href={crumb.href} className="breadcrumb-parent">{crumb.label}</Link>
+            ) : (
+              <span className="breadcrumb-parent">{crumb.label}</span>
+            )}
           </span>
         ))}
       </div>

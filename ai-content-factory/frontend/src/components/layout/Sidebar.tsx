@@ -52,7 +52,7 @@ export function Sidebar() {
       <nav className="sidebar-nav">
         <span className="sidebar-section-label">Main</span>
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-          const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
+          const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href + "/"));
           return (
             <Link
               key={href}

@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { BarChart2, TrendingUp, Eye, ThumbsUp, MessageSquare, Clock, Zap, Youtube } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { useYoutubeAnalytics } from "@/lib/queries";
@@ -67,10 +68,10 @@ function VideoRow({ video, maxViews }: { video: YTVideoStat; maxViews: number })
     <div className="analytics-table-row">
       {/* Thumbnail */}
       <div>
-        {video.thumbnail_url ? (
-          <img className="analytics-thumb" src={video.thumbnail_url} alt="" />
+          {video.thumbnail_url ? (
+          <Image className="analytics-thumb" src={video.thumbnail_url} alt="" width={48} height={27} />
         ) : (
-          <div className="analytics-thumb-placeholder">
+        <div className="analytics-thumb-placeholder">
             <Youtube size={12} />
           </div>
         )}

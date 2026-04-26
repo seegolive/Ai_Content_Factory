@@ -1,5 +1,6 @@
 "use client";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import {
   Video, Scissors, Eye, CheckCircle,
   Upload, ArrowRight, Zap, Play, Flame,
@@ -15,21 +16,24 @@ import { VideoUploader } from "@/components/video/VideoUploader";
 /* ─── Animated Counter ──────────────────────────────────── */
 function AnimatedNumber({ value }: { value: number }) {
   const [display, setDisplay] = useState(0);
+  const displayRef = useRef(0);
   const raf = useRef<number | null>(null);
   useEffect(() => {
-    const start = display;
+    const start = displayRef.current;
     const end = value;
     if (start === end) return;
     const t0 = performance.now();
     const step = (now: number) => {
       const p = Math.min((now - t0) / 650, 1);
       const e = 1 - Math.pow(1 - p, 3);
-      setDisplay(Math.round(start + (end - start) * e));
+      const current = Math.round(start + (end - start) * e);
+      displayRef.current = current;
+      setDisplay(current);
       if (p < 1) raf.current = requestAnimationFrame(step);
     };
     raf.current = requestAnimationFrame(step);
     return () => { if (raf.current) cancelAnimationFrame(raf.current); };
-  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [value]);
   return <>{display}</>;
 }
 
@@ -246,7 +250,7 @@ export default function DashboardPage() {
                 <div key={acc.channel_id} className="yt-widget">
                   <div className="yt-widget-avatar">
                     {acc.thumbnail_url
-                      ? <img src={acc.thumbnail_url} alt={acc.channel_name ?? ""} style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                      ? <Image src={acc.thumbnail_url} alt={acc.channel_name ?? ""} width={38} height={38} style={{ borderRadius: "50%", objectFit: "cover" }} />
                       : <Youtube size={16} color="var(--danger)" />}
                   </div>
                   <div className="yt-widget-info">

@@ -106,9 +106,9 @@ export function VideoUploader({ onSuccess }: VideoUploaderProps) {
                 MP4, MOV, MKV, AVI, WEBM &middot; up to {" "}
                 <span style={{ color: "var(--primary-text)" }}>5 GB</span>
               </div>
-              <button className="btn-primary" style={{ marginTop: 14 }} type="button">
+              <span className="btn-primary" style={{ marginTop: 14, pointerEvents: "none" }}>
                 <Upload size={12} /> Browse Files
-              </button>
+              </span>
             </div>
           )}
         </div>

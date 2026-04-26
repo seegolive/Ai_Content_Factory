@@ -21,7 +21,7 @@ function LoginContent() {
   useEffect(() => {
     const token = localStorage.getItem("access_token");
     if (token) router.replace("/dashboard");
-  }, []);
+  }, [router]);
 
   // Animate pipeline steps
   useEffect(() => {
@@ -38,7 +38,7 @@ function LoginContent() {
       const res = await authApi.getLoginUrl();
       window.location.href = res.data.auth_url;
     } catch {
-      setError("Gagal memuat URL login. Coba lagi.");
+      setError("Failed to load login URL. Please try again.");
       setLoading(false);
     }
   };
@@ -66,7 +66,7 @@ function LoginContent() {
           </div>
           <div>
             <h1 className="login-title">AI Content Factory</h1>
-            <p className="login-subtitle">Video → Viral Clips, otomatis</p>
+            <p className="login-subtitle">Video → Viral Clips, automated</p>
           </div>
         </div>
 
@@ -89,7 +89,7 @@ function LoginContent() {
 
         {/* Divider */}
         <div className="login-divider">
-          <span>Masuk untuk mulai</span>
+          <span>Sign in to get started</span>
         </div>
 
         {/* Google button */}
@@ -108,7 +108,7 @@ function LoginContent() {
               <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
             </svg>
           )}
-          <span>{loading ? "Mengalihkan…" : "Masuk dengan Google"}</span>
+          <span>{loading ? "Redirecting…" : "Sign in with Google"}</span>
         </button>
 
         {error && <p className="login-error">{error}</p>}

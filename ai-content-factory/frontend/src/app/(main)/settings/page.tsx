@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import {
   User, Youtube, Shield, LogOut, CheckCircle, AlertTriangle, ExternalLink, RefreshCw,
 } from "lucide-react";
@@ -62,10 +63,12 @@ export default function SettingsPage() {
               {me ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
                   {me.avatar_url ? (
-                    <img
+                    <Image
                       src={me.avatar_url}
                       alt={me.name ?? ""}
-                      style={{ width: 48, height: 48, borderRadius: "50%", border: "2px solid var(--border-2)" }}
+                      width={48}
+                      height={48}
+                      style={{ borderRadius: "50%", border: "2px solid var(--border-2)", objectFit: "cover" }}
                     />
                   ) : (
                     <div style={{
@@ -164,7 +167,7 @@ export default function SettingsPage() {
                     <div key={acc.channel_id} className="yt-account-row">
                       <div className="yt-avatar">
                         {acc.thumbnail_url
-                          ? <img src={acc.thumbnail_url} alt={acc.channel_name ?? ""} />
+                          ? <Image src={acc.thumbnail_url} alt={acc.channel_name ?? ""} width={36} height={36} style={{ borderRadius: "50%", objectFit: "cover" }} />
                           : <Youtube size={16} color="var(--danger)" />}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>

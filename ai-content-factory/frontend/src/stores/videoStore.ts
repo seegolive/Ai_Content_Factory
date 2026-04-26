@@ -1,6 +1,4 @@
 import { create } from "zustand";
-import type { Video, VideoDetail } from "@/types";
-import { videosApi } from "@/lib/api";
 
 interface ProcessingStatus {
   video_id: string;
@@ -11,34 +9,16 @@ interface ProcessingStatus {
 }
 
 interface VideoStore {
-  videos: Video[];
   activeVideoId: string | null;
   processingJobs: Map<string, ProcessingStatus>;
-  isLoading: boolean;
-  error: string | null;
-
-  fetchVideos: (params?: { status?: string }) => Promise<void>;
   setActiveVideo: (id: string | null) => void;
   updateProcessingStatus: (status: ProcessingStatus) => void;
-  removeVideo: (id: string) => void;
+  removeProcessingJob: (id: string) => void;
 }
 
-export const useVideoStore = create<VideoStore>((set, get) => ({
-  videos: [],
+export const useVideoStore = create<VideoStore>((set) => ({
   activeVideoId: null,
   processingJobs: new Map(),
-  isLoading: false,
-  error: null,
-
-  fetchVideos: async (params) => {
-    set({ isLoading: true, error: null });
-    try {
-      const res = await videosApi.list(params);
-      set({ videos: res.data, isLoading: false });
-    } catch (err: any) {
-      set({ error: err.message, isLoading: false });
-    }
-  },
 
   setActiveVideo: (id) => set({ activeVideoId: id }),
 
@@ -49,8 +29,10 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       return { processingJobs: jobs };
     }),
 
-  removeVideo: (id) =>
-    set((state) => ({
-      videos: state.videos.filter((v) => v.id !== id),
-    })),
+  removeProcessingJob: (id) =>
+    set((state) => {
+      const jobs = new Map(state.processingJobs);
+      jobs.delete(id);
+      return { processingJobs: jobs };
+    }),
 }));

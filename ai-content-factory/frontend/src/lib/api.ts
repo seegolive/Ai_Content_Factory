@@ -22,11 +22,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Handle 401 and 429
+// Handle 401 (logout) and 429 (rate limit with exponential backoff)
 api.interceptors.response.use(
   (res) => res,
-  (error) => {
-    if (error.response?.status === 401 && typeof window !== "undefined") {
+  async (error) => {
+    const { config, response } = error;
+    if (response?.status === 429 && config) {
+      const retryCount: number = (config._retryCount ?? 0) + 1;
+      if (retryCount <= 3) {
+        config._retryCount = retryCount;
+        const delay = Math.pow(2, retryCount) * 500; // 1s, 2s, 4s
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        return api(config);
+      }
+    }
+    if (response?.status === 401 && typeof window !== "undefined") {
       localStorage.removeItem("access_token");
       window.location.href = "/login";
     }

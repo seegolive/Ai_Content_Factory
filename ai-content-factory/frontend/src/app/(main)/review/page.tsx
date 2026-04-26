@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle, XCircle, Play, Pause, TrendingUp, AlertTriangle, Edit2, Check,
 } from "lucide-react";
@@ -22,9 +22,16 @@ export default function ReviewPage() {
   const { selectedClips, toggleClipSelection, clearSelection, reviewActiveClipId, setReviewActiveClip } = useUIStore();
 
   const { data: reviewVideos = [] } = useVideos({ status: "review" });
-  const firstVideoId = reviewVideos[0]?.id ?? "";
+  const [selectedVideoId, setSelectedVideoId] = useState<string>("");
 
-  const { data: clips = [] } = useClips(firstVideoId);
+  // Keep selectedVideoId in sync when reviewVideos list changes
+  useEffect(() => {
+    if (reviewVideos.length > 0 && !reviewVideos.find((v) => v.id === selectedVideoId)) {
+      setSelectedVideoId(reviewVideos[0].id);
+    }
+  }, [reviewVideos, selectedVideoId]);
+
+  const { data: clips = [] } = useClips(selectedVideoId);
   const pendingClips = clips.filter((c) => c.review_status === "pending");
   const activeClip = pendingClips.find((c) => c.id === reviewActiveClipId) ?? pendingClips[0];
 
@@ -40,7 +47,7 @@ export default function ReviewPage() {
     if (!reviewActiveClipId && pendingClips.length > 0) {
       setReviewActiveClip(pendingClips[0].id);
     }
-  }, [pendingClips.length]);
+  }, [reviewActiveClipId, pendingClips, setReviewActiveClip]);
 
   const togglePlay = () => {
     if (!videoRef.current) return;
@@ -65,7 +72,16 @@ export default function ReviewPage() {
     toast.success("Title updated");
   };
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+  // Ref pattern: handler body is always fresh, but we only register/unregister once
+  const handleKeyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  handleKeyDownRef.current = (e: KeyboardEvent) => {
+    // Don't intercept keyboard events when user is typing in a form element
+    const target = e.target as HTMLElement;
+    if (
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT"
+    ) return;
     if (!activeClip || editingTitle) return;
     const idx = pendingClips.findIndex((c) => c.id === activeClip.id);
     switch (e.key.toLowerCase()) {
@@ -78,12 +94,13 @@ export default function ReviewPage() {
       case " ": e.preventDefault(); togglePlay(); break;
       case "b": e.preventDefault(); toggleClipSelection(activeClip.id); break;
     }
-  }, [activeClip, pendingClips, editingTitle]);
+  };
 
   useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+    const handler = (e: KeyboardEvent) => handleKeyDownRef.current(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   return (
     <>
@@ -114,6 +131,23 @@ export default function ReviewPage() {
                 <button className="btn-link" onClick={clearSelection}>Clear ({selectedClips.length})</button>
               )}
             </div>
+
+            {/* Video selector — visible only when multiple videos are in review */}
+            {reviewVideos.length > 1 && (
+              <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-1)" }}>
+                <select
+                  value={selectedVideoId}
+                  onChange={(e) => { setSelectedVideoId(e.target.value); clearSelection(); }}
+                  className="settings-input"
+                  style={{ fontSize: 12, height: 28, padding: "0 8px", width: "100%" }}
+                  aria-label="Select video"
+                >
+                  {reviewVideos.map((v) => (
+                    <option key={v.id} value={v.id}>{v.title ?? "Untitled"}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="review-list-scroll">
               {pendingClips.map((clip, idx) => (
                 <div
@@ -152,7 +186,7 @@ export default function ReviewPage() {
           {activeClip && (
             <div className="review-main">
               {/* Video player */}
-              <div className="review-video-area" onClick={togglePlay} style={{ cursor: "pointer" }}>
+              <div className="review-video-area" onClick={togglePlay} style={{ cursor: "pointer", position: "relative" }}>
                 <video
                   ref={videoRef}
                   key={activeClip.id}
@@ -162,6 +196,22 @@ export default function ReviewPage() {
                   onPause={() => setIsPlaying(false)}
                   loop
                 />
+                {/* Play overlay — visible when paused to show the area is clickable */}
+                <div style={{
+                  position: "absolute", inset: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  pointerEvents: "none",
+                  opacity: isPlaying ? 0 : 1,
+                  transition: "opacity 0.2s",
+                }}>
+                  <div style={{
+                    width: 52, height: 52, borderRadius: "50%",
+                    background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    <Play size={20} color="#fff" style={{ marginLeft: 2 }} />
+                  </div>
+                </div>
               </div>
 
               {/* Action bar */}
