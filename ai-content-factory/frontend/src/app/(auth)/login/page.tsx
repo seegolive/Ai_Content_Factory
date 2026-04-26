@@ -1,23 +1,15 @@
 "use client";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Factory, Loader2 } from "lucide-react";
 import { authApi } from "@/lib/api";
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
 
-  // Handle OAuth callback (code param)
-  const code = searchParams.get("code");
-
   useEffect(() => {
-    if (code) {
-      // This is handled by the /auth/google/callback backend route
-      // Frontend just reads the token from query param if redirected here
-    }
-    // Check if already logged in
     const token = localStorage.getItem("access_token");
     if (token) router.push("/dashboard");
   }, []);
@@ -63,5 +55,17 @@ export default function LoginPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-primary animate-spin" />
+      </div>
+    }>
+      <LoginContent />
+    </Suspense>
   );
 }

@@ -1,11 +1,11 @@
 FROM python:3.12-slim
 
-# System deps including ffmpeg
+# System deps including ffmpeg (ffprobe is bundled with ffmpeg)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    ffprobe \
     libpq-dev \
     gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
