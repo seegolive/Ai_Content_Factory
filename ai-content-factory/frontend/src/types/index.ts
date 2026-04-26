@@ -42,7 +42,7 @@ export interface VideoDetail extends Video {
   error_message?: string;
 }
 
-export interface VideoStatus {
+export interface VideoStatusResponse {
   video_id: string;
   status: VideoStatus;
   checkpoint?: string;

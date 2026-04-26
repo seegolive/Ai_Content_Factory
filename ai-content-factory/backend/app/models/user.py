@@ -32,7 +32,7 @@ class User(Base):
 
     # Relationships
     youtube_accounts = relationship("YoutubeAccount", back_populates="user", lazy="selectin")
-    videos = relationship("Video", back_populates="user", lazy="dynamic")
+    videos = relationship("Video", back_populates="user", lazy="noload")
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} plan={self.plan}>"

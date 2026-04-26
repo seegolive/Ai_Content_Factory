@@ -117,7 +117,7 @@ TRANSCRIPT:
 {segments_text}
 
 Full text:
-{transcript.full_text[:4000]}  # Truncate if very long
+{transcript.full_text[:4000]}
 """
 
         response = await self._call_openrouter(
@@ -203,6 +203,14 @@ Full text:
     def _parse_clip_suggestions(self, content: str) -> List[ClipSuggestion]:
         """Parse JSON response into ClipSuggestion objects."""
         try:
+            # Strip markdown code fences that some models add despite json_object mode
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("```", 2)[1]
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.rsplit("```", 1)[0].strip()
+
             data = json.loads(content)
             clips = []
             for item in data.get("clips", []):

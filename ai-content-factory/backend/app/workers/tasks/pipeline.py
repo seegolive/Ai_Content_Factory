@@ -40,7 +40,7 @@ def _checkpoint_index(checkpoint: Optional[str]) -> int:
 
 def _run_async(coro):
     """Run an async coroutine from a sync Celery task."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 @celery_app.task(bind=True, max_retries=3, name="app.workers.tasks.pipeline.process_video_pipeline")
@@ -70,6 +70,11 @@ def process_video_pipeline(self, video_id: str):
 
             current_idx = _checkpoint_index(video.checkpoint)
             logger.info(f"[Pipeline] Resuming from checkpoint: {video.checkpoint!r} (idx={current_idx})")
+
+            # Skip if already fully completed
+            if video.checkpoint == "review_ready":
+                logger.info(f"[Pipeline] Video {video_id} already completed, skipping.")
+                return
 
             try:
                 video.status = "processing"

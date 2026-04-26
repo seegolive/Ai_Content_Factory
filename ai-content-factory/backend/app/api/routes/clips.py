@@ -42,6 +42,8 @@ async def _get_clip_or_404(
 @router.get("/videos/{video_id}/clips", response_model=List[ClipOut])
 async def list_clips(
     video_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
     qc_status: Optional[str] = Query(None),
     review_status: Optional[str] = Query(None),
     viral_score_min: Optional[int] = Query(None, ge=0, le=100),
@@ -69,6 +71,8 @@ async def list_clips(
         query = query.order_by(Clip.viral_score.desc().nulls_last())
     else:
         query = query.order_by(Clip.created_at.desc())
+
+    query = query.offset((page - 1) * page_size).limit(page_size)
 
     result = await db.execute(query)
     clips = result.scalars().all()
@@ -106,7 +110,17 @@ async def bulk_review(
         .values(review_status=new_status, reviewed_at=now)
     )
     await db.commit()
-    return {"updated": len(body.clip_ids), "review_status": new_status}
+    # Use rowcount for accurate count of actually-updated rows
+    from sqlalchemy import func
+    count_result = await db.execute(
+        select(func.count(Clip.id)).where(
+            Clip.id.in_(body.clip_ids),
+            Clip.user_id == current_user.id,
+            Clip.review_status == new_status,
+        )
+    )
+    updated_count = count_result.scalar_one()
+    return {"updated": updated_count, "review_status": new_status}
 
 
 @router.patch("/clips/{clip_id}", response_model=ClipOut)
@@ -128,7 +142,7 @@ async def update_clip(
     return ClipOut.model_validate(clip)
 
 
-@router.post("/clips/{clip_id}/publish")
+@router.post("/clips/{clip_id}/publish", status_code=status.HTTP_202_ACCEPTED)
 async def publish_clip(
     clip_id: uuid.UUID,
     body: ClipPublishRequest,
@@ -142,6 +156,18 @@ async def publish_clip(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Clip must be approved before publishing",
         )
+
+    # Verify YouTube account ownership before dispatching
+    if body.youtube_account_id:
+        from app.models.video import YoutubeAccount
+        yt_result = await db.execute(
+            select(YoutubeAccount).where(
+                YoutubeAccount.id == body.youtube_account_id,
+                YoutubeAccount.user_id == current_user.id,
+            )
+        )
+        if not yt_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="YouTube account not found")
 
     try:
         from app.workers.tasks.distribute import distribute_clip

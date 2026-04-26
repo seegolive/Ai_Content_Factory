@@ -60,13 +60,14 @@ def build_google_auth_url(state: str) -> str:
         "prompt": "consent",
         "state": state,
     }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
+    from urllib.parse import urlencode
+    query = urlencode(params)
     return f"{GOOGLE_AUTH_URL}?{query}"
 
 
 async def exchange_code_for_tokens(code: str) -> dict:
     """Exchange OAuth code for access + refresh tokens."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
         response = await client.post(
             GOOGLE_TOKEN_URL,
             data={
@@ -83,7 +84,7 @@ async def exchange_code_for_tokens(code: str) -> dict:
 
 async def get_google_user_info(access_token: str) -> dict:
     """Fetch user profile from Google."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
         response = await client.get(
             GOOGLE_USERINFO_URL,
             headers={"Authorization": f"Bearer {access_token}"},
@@ -108,7 +109,12 @@ async def get_current_user(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    result = await db.execute(select(User).where(User.id == user_uuid))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")

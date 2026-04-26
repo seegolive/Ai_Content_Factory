@@ -6,7 +6,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.core.config import settings
@@ -26,8 +25,8 @@ app = FastAPI(
     title="AI Content Factory",
     description="Automated video-to-clips pipeline with AI analysis",
     version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.APP_ENV != "production" else None,
+    redoc_url="/redoc" if settings.APP_ENV != "production" else None,
     lifespan=lifespan,
 )
 
@@ -56,7 +55,7 @@ async def log_requests(request: Request, call_next):
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": exc.errors(), "body": str(exc.body)},
+        content={"detail": exc.errors()},
     )
 
 
@@ -69,11 +68,12 @@ async def generic_error_handler(request: Request, exc: Exception):
     )
 
 
-# Static files for local storage
+# Protected file serving — requires JWT auth
+# IMPORTANT: Do NOT use StaticFiles(directory=...) for user content — that serves files without auth.
+# Use the /api/v1/clips/{id}/stream endpoint (authenticated) to serve clip files.
 import os
 
 os.makedirs(settings.LOCAL_STORAGE_PATH, exist_ok=True)
-app.mount("/storage", StaticFiles(directory=settings.LOCAL_STORAGE_PATH), name="storage")
 
 
 # Routers

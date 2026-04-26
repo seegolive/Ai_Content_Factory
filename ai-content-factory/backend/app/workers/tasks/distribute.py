@@ -28,6 +28,12 @@ def distribute_clip(self, clip_id: str, platforms: List[str], youtube_account_id
             status_updates = {}
 
             for platform in platforms:
+                # Skip platforms already successfully published (idempotency guard)
+                existing = clip.platform_status.get(platform, {})
+                if existing.get("status") == "published":
+                    logger.info(f"[Distribute] Clip {clip_id} already published to {platform}, skipping")
+                    continue
+
                 if platform == "youtube" and youtube_account_id:
                     try:
                         from app.services.youtube_service import YouTubeService
@@ -70,4 +76,4 @@ def distribute_clip(self, clip_id: str, platforms: List[str], youtube_account_id
             clip.platform_status = {**clip.platform_status, **status_updates}
             await db.commit()
 
-    asyncio.get_event_loop().run_until_complete(_run())
+    asyncio.run(_run())

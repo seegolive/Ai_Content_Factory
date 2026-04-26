@@ -15,7 +15,7 @@ class YoutubeAccount(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     channel_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     channel_name: Mapped[str] = mapped_column(String(255), nullable=True)
@@ -32,7 +32,7 @@ class YoutubeAccount(Base):
 
     # Relationships
     user = relationship("User", back_populates="youtube_accounts")
-    videos = relationship("Video", back_populates="youtube_account", lazy="dynamic")
+    videos = relationship("Video", back_populates="youtube_account", lazy="noload")
 
     def __repr__(self) -> str:
         return f"<YoutubeAccount channel={self.channel_name}>"
@@ -80,7 +80,7 @@ class Video(Base):
     # Relationships
     user = relationship("User", back_populates="videos")
     youtube_account = relationship("YoutubeAccount", back_populates="videos")
-    clips = relationship("Clip", back_populates="video", lazy="dynamic")
+    clips = relationship("Clip", back_populates="video", lazy="noload")
 
     __table_args__ = (
         Index("ix_videos_user_status", "user_id", "status"),

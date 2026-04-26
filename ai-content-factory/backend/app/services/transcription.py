@@ -1,5 +1,6 @@
 """Whisper-based local transcription service using faster-whisper."""
 import asyncio
+import threading
 from dataclasses import dataclass, field
 from functools import partial
 from typing import List, Optional
@@ -31,13 +32,15 @@ class WhisperTranscriptionService:
     """Load faster-whisper once, reuse for all transcription tasks."""
 
     _model = None  # Class-level singleton
+    _model_lock = threading.Lock()
 
     def __init__(self):
         self._ensure_model()
 
     def _ensure_model(self):
-        if WhisperTranscriptionService._model is None:
-            self._load_model()
+        with WhisperTranscriptionService._model_lock:
+            if WhisperTranscriptionService._model is None:
+                self._load_model()
 
     def _load_model(self):
         """Load model — called once at startup."""
@@ -106,9 +109,9 @@ class WhisperTranscriptionService:
             word_count=len(full_text.split()),
         )
 
-    async def transcribe(self, video_path: str, language: Optional[str] = None) -> TranscriptResult:
+    async def transcribe(self, video_path: str, language: Optional[str] = None, _is_retry: bool = False) -> TranscriptResult:
         """Non-blocking transcription using thread pool executor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(
                 None, partial(self._transcribe_sync, video_path, language)
@@ -118,12 +121,14 @@ class WhisperTranscriptionService:
                 f"language={result.language}, duration={result.duration:.1f}s"
             )
             return result
-        except MemoryError:
-            logger.error("Out of memory during transcription — falling back to CPU")
-            # Reload with smaller model on CPU
-            from faster_whisper import WhisperModel
-            WhisperTranscriptionService._model = WhisperModel("medium", device="cpu", compute_type="int8")
-            return await self.transcribe(video_path, language)
+        except (MemoryError, RuntimeError) as e:
+            if not _is_retry and ("out of memory" in str(e).lower() or "cuda" in str(e).lower()):
+                logger.error("GPU OOM during transcription — falling back to CPU medium model")
+                from faster_whisper import WhisperModel
+                with WhisperTranscriptionService._model_lock:
+                    WhisperTranscriptionService._model = WhisperModel("medium", device="cpu", compute_type="int8")
+                return await self.transcribe(video_path, language, _is_retry=True)
+            raise
         except FileNotFoundError:
             raise FileNotFoundError(f"Video file not found: {video_path}")
         except Exception as e:
