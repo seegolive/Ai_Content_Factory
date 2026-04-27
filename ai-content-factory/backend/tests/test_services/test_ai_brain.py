@@ -126,8 +126,11 @@ def test_try_parse_invalid_json_returns_none():
 # ── Integration: _call_with_fallback ─────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_fallback_groq_success_no_other_provider_tried():
+async def test_fallback_groq_success_no_other_provider_tried(monkeypatch):
     """If Groq succeeds, other providers should NOT be called."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk_test_key_not_empty")
+
     service = AIBrainService()
     messages = [{"role": "user", "content": "test"}]
 

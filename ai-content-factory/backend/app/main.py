@@ -53,9 +53,16 @@ async def log_requests(request: Request, call_next):
 # Exception handlers
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
+    # Pydantic v2 may include non-serializable ctx (e.g. ValueError objects) — convert to str
+    errors = []
+    for err in exc.errors():
+        e = dict(err)
+        if "ctx" in e and "error" in e["ctx"]:
+            e["ctx"] = {k: str(v) for k, v in e["ctx"].items()}
+        errors.append(e)
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": exc.errors()},
+        content={"detail": errors},
     )
 
 
