@@ -1,36 +1,38 @@
 # 🏭 AI Content Factory
 
-![Python](https://img.shields.io/badge/Python-3.12-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green) ![Next.js](https://img.shields.io/badge/Next.js-15-black) ![Status](https://img.shields.io/badge/Status-MVP-orange)
+![Python](https://img.shields.io/badge/Python-3.12-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green) ![Next.js](https://img.shields.io/badge/Next.js-15-black) ![Groq](https://img.shields.io/badge/AI-Groq%20%7C%20Gemini%20%7C%20GPT--4o--mini-purple) ![Status](https://img.shields.io/badge/Status-MVP-orange)
 
-> Automated video-to-clips pipeline: upload a long video → AI transcribes, scores virality, cuts clips, QC checks, and queues for review & YouTube publishing.
+> Platform otomasi produksi konten gaming: upload LIVE recording → AI transkripsi → deteksi momen viral → potong clip → QC → review → publish ke YouTube Shorts.
+>
+> **Use case:** Seego GG — gaming Indonesia (Battlefield 6, KCD2, Arc Raiders)
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     AI Content Factory                       │
-│                                                             │
-│  Next.js 15 Frontend (port 3000)                           │
-│    └── Dashboard / Videos / Review Queue                   │
-│         │                                                   │
-│  FastAPI Backend (port 8000)                               │
-│    ├── /api/v1/auth     (Google OAuth + JWT)               │
-│    ├── /api/v1/videos   (upload, status, list)             │
-│    └── /api/v1/clips    (review, bulk, publish)            │
-│         │                                                   │
-│  Celery Workers (GPU-enabled)                              │
-│    └── Pipeline: validate → transcribe → AI → QC → cut    │
-│         │                                                   │
-│  ┌──────┴──────┐                                           │
-│  │  PostgreSQL │  Redis (broker + cache)                   │
-│  └─────────────┘                                           │
-│                                                             │
-│  External: Whisper (local GPU) · OpenRouter · ACRCloud     │
-│            YouTube Data API · Telegram · SendGrid          │
-└─────────────────────────────────────────────────────────────┘
+LIVE Recording (2–5 jam)
+       ↓
+[Whisper large-v3] ← RTX 4070 GPU (lokal, gratis, ~6GB VRAM)
+       ↓ transcript + timestamps
+[Groq llama-3.3-70b] ← PRIMARY AI (cloud, GRATIS, tercepat)
+   ↓ 429/fail         ↓ viral clips + titles (Bahasa Indonesia)
+[Gemini Flash]     [FFmpeg CUDA] ← RTX 4070 (lokal)
+   ↓ fail             ↓ cut + resize 3 format + burn subtitle
+[GPT-4o-mini]      [Review Dashboard]
+                        ↓ approve (A/R/J/K keyboard shortcuts)
+                   [YouTube Shorts] ✅
 ```
+
+### VRAM Management (RTX 4070 12GB)
+```
+Stage 2 Transcription : Whisper large-v3 = ~6GB → load → UNLOAD setelah selesai
+Stage 5 Video Process : FFmpeg CUDA       = ~1GB → ringan, bisa overlap
+SDXL (V2 nanti)       : ~8GB → NOT in MVP, load terpisah
+```
+Pipeline berjalan SEQUENTIAL — tidak pernah 2 model besar di VRAM bersamaan.
+
+---
 
 ## Prerequisites
 
@@ -39,86 +41,129 @@
 - **Docker** + Docker Compose
 - **NVIDIA GPU** (RTX 4070 12GB recommended) + drivers
 - **CUDA** 12.4
-- **FFmpeg** (installed in Docker image)
 
 ---
 
-## Quick Start (5 steps)
+## Quick Start (7 langkah)
 
 ```bash
-# 1. Clone and enter project
+# 1. Clone dan masuk ke folder
 cd ai-content-factory
 
-# 2. Copy env and configure
+# 2. Copy env dan konfigurasi
 cp .env.example .env
-# Edit .env — fill in GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OPENROUTER_API_KEY
+# Edit .env — isi GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GROQ_API_KEY, OPENROUTER_API_KEY
 
-# 3. Start all services
+# 3. Install PyTorch dengan CUDA (jalankan SEKALI — tidak via requirements.txt)
+make install-torch
+
+# 4. Start semua services
 make dev
 
-# 4. Run database migrations
+# 5. Run database migrations
 make migrate
 
-# 5. Open browser
+# 6. Verify semua AI provider aktif
+make ai-test
+
+# 7. Buka browser
 open http://localhost:3000
+```
+
+---
+
+## AI Provider Setup
+
+### Groq (PRIMARY — GRATIS)
+1. Daftar di [console.groq.com](https://console.groq.com)
+2. Buat API key
+3. Set `GROQ_API_KEY=gsk_...` di `.env`
+
+### OpenRouter (Fallback 1 & 2)
+1. Daftar di [openrouter.ai](https://openrouter.ai)
+2. Buat API key (Gemini Flash & GPT-4o-mini sangat murah)
+3. Set `OPENROUTER_API_KEY=sk-or-...` di `.env`
+
+### Verify semua provider:
+```bash
+make ai-test
+# Output:
+#   Provider                     Model                               Status       Latency
+#   ──────────────────────────────────────────────────────────────────────────────────────
+#   Groq                         llama-3.3-70b-versatile             ✅ OK        320ms
+#   OpenRouter Gemini            google/gemini-2.0-flash-001         ✅ OK        890ms
+#   OpenRouter GPT-4o-mini       openai/gpt-4o-mini                  ✅ OK        1100ms
 ```
 
 ---
 
 ## Environment Variables
 
-See `.env.example` for the full list. Key variables:
+Key variables (lihat `.env.example` untuk list lengkap):
 
 | Variable | Description |
 |---|---|
+| `GROQ_API_KEY` | Groq API key (primary AI, gratis) |
+| `OPENROUTER_API_KEY` | OpenRouter API key (fallback 1 & 2) |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` (default) |
+| `OPENROUTER_MODEL` | `google/gemini-2.0-flash-001` (fallback 1) |
+| `OPENROUTER_FALLBACK_MODEL` | `openai/gpt-4o-mini` (fallback 2) |
 | `GOOGLE_CLIENT_ID` | Google OAuth App client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth App client secret |
-| `OPENROUTER_API_KEY` | OpenRouter API key (AI analysis) |
-| `WHISPER_MODEL` | `large-v3` (default, best quality) |
+| `WHISPER_MODEL` | `large-v3` (default, terbaik) |
 | `WHISPER_DEVICE` | `cuda` for GPU, `cpu` fallback |
-| `ACRCLOUD_*` | ACRCloud credentials for copyright check |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot for notifications |
+| `ACRCLOUD_*` | ACRCloud credentials untuk copyright check |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot untuk notifikasi |
 
 ---
 
-## Development Guide
+## AI Provider Cost Estimate
 
-### Start local dev stack
+| Provider | Model | Biaya | Speed | ID Quality |
+|---|---|---|---|---|
+| **Groq (PRIMARY)** | llama-3.3-70b-versatile | **GRATIS** | ⚡⚡⚡ | ⭐⭐⭐⭐ |
+| Gemini Flash | google/gemini-2.0-flash-001 | ~$0.07/1M token | ⚡⚡ | ⭐⭐⭐⭐⭐ |
+| GPT-4o-mini | openai/gpt-4o-mini | ~$0.15/1M token | ⚡⚡ | ⭐⭐⭐⭐ |
+
+**Estimasi MVP (100 video/bulan, ~8K token/video):**
+- Normal (Groq semua): **$0/bulan**
+- Jika Groq down, semua ke Gemini: **~$0.06/bulan**
+- Worst case semua ke GPT-4o-mini: **~$0.12/bulan**
+
+---
+
+## Development
+
 ```bash
-make dev           # Start all Docker containers
-make logs          # Tail all logs
+make dev           # Start semua Docker containers
+make logs          # Tail semua logs
 make logs-worker   # Tail Celery worker only
+make flower        # Celery monitor at :5555
+make redis-cli     # Redis CLI
+
+make migrate       # Apply migrations
+make makemigrations  # Create migration baru
+make shell-backend # Bash ke backend container
+make shell-db      # psql ke database
+
+make test          # Run pytest
+make lint          # Ruff + mypy
+make format        # Black + isort
+
+make ai-test       # Test semua 3 AI provider + print latency tabel
+make gpu-test      # Cek CUDA + VRAM availability
+make install-torch # Install PyTorch CUDA 12.4
+make install-whisper  # Download Whisper large-v3 model
 ```
 
-### Test the pipeline with a sample video
+### Pipeline test manual:
 ```bash
-# 1. Login to frontend at http://localhost:3000
-# 2. Go to Videos page
-# 3. Upload an MP4 file or paste a YouTube URL
-# 4. Watch processing progress in Dashboard
-# 5. Review clips in Review Queue (keyboard: A=approve, R=reject, J/K=navigate)
+# 1. Login di http://localhost:3000
+# 2. Buka halaman Videos → upload MP4 atau paste YouTube URL
+# 3. Watch progress di Dashboard (stage: Validated → Transcribing → Analyzing → QC → Processing → Ready)
+# 4. Review clips di Review Queue
+#    Keyboard shortcuts: A=approve, R=reject, J/K=navigate, Space=play
 ```
-
-### Monitor Celery
-```bash
-make flower        # Opens Flower at http://localhost:5555
-make redis-cli     # Redis CLI for debugging queues
-```
-
-### Database operations
-```bash
-make migrate                 # Apply migrations
-make makemigrations          # Create new migration
-make shell-db                # psql into database
-```
-
----
-
-## API Documentation
-
-Swagger UI available at: `http://localhost:8000/docs`
-
-ReDoc: `http://localhost:8000/redoc`
 
 ---
 
@@ -127,44 +172,62 @@ ReDoc: `http://localhost:8000/redoc`
 | Stage | Checkpoint | Description |
 |---|---|---|
 | 1 | `input_validated` | File check + ACRCloud copyright pre-scan |
-| 2 | `transcript_done` | Whisper large-v3 transcription (GPU) |
-| 3 | `ai_done` | OpenRouter AI viral scoring + clip suggestions |
-| 4 | `qc_done` | Quality control gate |
-| 5 | `clips_done` | FFmpeg cut + resize + subtitle burn |
-| 6 | `review_ready` | Notification sent, clips ready for review |
+| 2 | `transcript_done` | Whisper large-v3 transkripsi (GPU) → UNLOAD VRAM |
+| 3 | `ai_done` | Multi-model AI (Groq→Gemini→GPT-4o-mini) viral scoring |
+| 4 | `qc_done` | Quality control gate (silence, blur, black frame) |
+| 5 | `clips_done` | FFmpeg: cut + resize 3 format + burn subtitle |
+| 6 | `review_ready` | Notif Telegram, clips siap direview |
 
-Pipeline is **checkpoint-resumable** — if a stage fails, retry picks up where it left off.
+Pipeline **checkpoint-resumable** — jika stage gagal, retry lanjut dari checkpoint terakhir.
+
+### Clip Moment Types
+Review Queue menampilkan badge per momen:
+
+| Badge | Type | Deskripsi |
+|---|---|---|
+| 🎯 Clutch | `clutch` | 1vX, menang tipis, comeback dramatis |
+| 😂 Funny | `funny` | Momen lucu, fail, humor |
+| 🏆 Achievement | `achievement` | First kill, milestone, unlock |
+| 😤 Rage | `rage` | Frustasi, emosi, rage quit |
+| ⚡ Epic | `epic` | Momen luar biasa, highlight |
+| 💀 Fail | `fail` | Kesalahan lucu, unexpected death |
 
 ---
 
-## GPU Setup (Windows WSL2 CUDA)
+## GPU Setup (Windows WSL2 + CUDA)
 
 ```bash
-# 1. Install NVIDIA drivers for Windows (not WSL)
-# 2. Install CUDA toolkit in WSL2:
+# 1. Install NVIDIA drivers untuk Windows (bukan WSL)
+# 2. Install CUDA toolkit di WSL2:
 sudo apt-get install -y nvidia-cuda-toolkit
 
-# 3. Verify GPU is accessible:
+# 3. Verify GPU accessible:
 nvidia-smi
 
-# 4. Docker GPU access is configured in docker-compose.yml
-#    celery_worker service has: deploy.resources.reservations.devices
+# 4. Docker GPU access sudah dikonfigurasi di docker-compose.yml
+#    (celery_worker service punya nvidia device reservation)
+
+# 5. Test dari dalam container:
+make gpu-test
+# Output: CUDA available: True | GPU: NVIDIA GeForce RTX 4070 | VRAM: 12.0 GB
 ```
 
 ---
 
 ## Troubleshooting
 
-**Whisper falls back to CPU**: CUDA not available in container. Check `nvidia-smi` inside container:
+**Groq rate limit**: Akan otomatis fallback ke Gemini Flash, lalu GPT-4o-mini. Log tersimpan di `make logs-worker`.
+
+**Whisper fallback ke CPU**: CUDA tidak tersedia di container. Cek `nvidia-smi` di dalam container:
 ```bash
 docker compose exec celery_worker nvidia-smi
 ```
 
-**Database connection refused**: Wait for postgres healthcheck to pass, or run `make dev` again.
+**Database connection refused**: Tunggu postgres healthcheck pass, atau jalankan `make dev` lagi.
 
-**OpenRouter returns errors**: Verify `OPENROUTER_API_KEY` in `.env`. Check `make logs-worker` for error details.
+**AI semua provider gagal**: Cek API key di `.env`, lalu jalankan `make ai-test` untuk diagnosa.
 
-**YouTube upload fails**: Ensure OAuth scope includes `youtube.upload`. Re-authenticate via `/auth/google/login`.
+**YouTube upload gagal**: Pastikan OAuth scope include `youtube.upload`. Re-auth via `/auth/google/login`.
 
 ---
 
@@ -179,4 +242,8 @@ docker compose exec celery_worker nvidia-smi
 
 ---
 
-*Built for local execution on Ryzen 9800X3D + RTX 4070 · Target: 10 beta users, 100 clips/week*
+*Built for local execution — Ryzen 9800X3D + RTX 4070 12GB + 32GB DDR5*
+*AI Stack: Whisper (lokal GPU) + Groq/Gemini Flash/GPT-4o-mini (cloud fallback)*
+*Use case: Seego GG — Gaming Indonesia LIVE recordings → Shorts otomatis*
+*Target: 10 beta users, 100 clips/bulan*
+
