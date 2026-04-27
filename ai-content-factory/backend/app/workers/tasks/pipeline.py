@@ -127,6 +127,7 @@ def process_video_pipeline(self, video_id: str):
                             video_title=video.title or str(video.id),
                             clips_count=clips_count,
                             user_email=user.email,
+                            provider_used=video.ai_provider_used or "",
                         )
 
                 logger.info(f"[Pipeline] Completed for video_id={video_id}")
@@ -246,14 +247,17 @@ async def _stage_ai_analysis(video, db):
             end_time=suggestion.end_time,
             duration=suggestion.end_time - suggestion.start_time,
             viral_score=suggestion.viral_score,
+            moment_type=suggestion.moment_type,
             hook_text=suggestion.hook_text,
             hashtags=suggestion.hashtags,
             qc_status="pending",
             review_status="pending",
+            ai_provider_used=analysis.provider_used,
         )
         db.add(clip)
 
     video.checkpoint = "ai_done"
+    video.ai_provider_used = analysis.provider_used
     logger.info(f"AI analysis done via {analysis.provider_used} ({len(analysis.clips)} clips, {analysis.tokens_used} tokens)")
     await db.commit()
 

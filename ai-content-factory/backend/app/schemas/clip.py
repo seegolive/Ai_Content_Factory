@@ -15,16 +15,22 @@ class ClipOut(BaseModel):
     end_time: float
     duration: Optional[float] = None
     viral_score: Optional[int] = None
+    moment_type: Optional[str] = None
     hook_text: Optional[str] = None
     hashtags: list[str] = []
     thumbnail_path: Optional[str] = None
     clip_path: Optional[str] = None
+    clip_path_horizontal: Optional[str] = None
+    clip_path_vertical: Optional[str] = None
+    clip_path_square: Optional[str] = None
+    format_generated: dict = {}
     format: str
     qc_status: str
     qc_issues: list[str] = []
     review_status: str
     reviewed_at: Optional[datetime] = None
     platform_status: dict = {}
+    ai_provider_used: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

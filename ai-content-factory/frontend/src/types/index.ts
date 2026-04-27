@@ -52,6 +52,8 @@ export interface VideoStatusResponse {
   error_message?: string;
 }
 
+export type MomentType = "clutch" | "funny" | "achievement" | "rage" | "epic" | "fail";
+
 export interface Clip {
   id: string;
   video_id: string;
@@ -61,16 +63,22 @@ export interface Clip {
   end_time: number;
   duration?: number;
   viral_score?: number;
+  moment_type?: MomentType;
   hook_text?: string;
   hashtags: string[];
   thumbnail_path?: string;
   clip_path?: string;
+  clip_path_horizontal?: string;
+  clip_path_vertical?: string;
+  clip_path_square?: string;
+  format_generated: { horizontal?: boolean; vertical?: boolean; square?: boolean };
   format: ClipFormat;
   qc_status: QCStatus;
   qc_issues: { type: string; description: string; severity: string }[];
   review_status: ReviewStatus;
   reviewed_at?: string;
   platform_status: Record<string, { status: string; video_id?: string }>;
+  ai_provider_used?: string;
   created_at: string;
 }
 

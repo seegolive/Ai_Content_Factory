@@ -66,45 +66,83 @@ class NotificationService:
                 await asyncio.sleep(2 ** attempt)
         return False
 
-    async def notify_job_complete(self, video_title: str, clips_count: int, user_email: str) -> None:
+    async def notify_job_complete(
+        self,
+        video_title: str,
+        clips_count: int,
+        user_email: str,
+        provider_used: str = "",
+        duration: str = "",
+    ) -> None:
         """Notify user that pipeline completed."""
         safe_title = html.escape(video_title)
+        provider_line = f"\n🤖 AI: <b>{html.escape(provider_used)}</b>" if provider_used else ""
+        duration_line = f"\n⏱️ Selesai dalam {html.escape(duration)}" if duration else ""
         message = (
-            f"✅ <b>Processing Complete!</b>\n\n"
-            f"Video: <i>{safe_title}</i>\n"
-            f"Clips ready for review: <b>{clips_count}</b>\n\n"
-            f"Open your dashboard to review and approve clips."
+            f"✅ <b>{safe_title}</b>\n"
+            f"\n📊 {clips_count} clips siap direview{provider_line}{duration_line}\n"
+            f"\n👉 Buka dashboard untuk review"
         )
         await asyncio.gather(
             self.send_telegram(message),
             self.send_email(
                 to=user_email,
-                subject=f"✅ {clips_count} clips ready for review",
-                body=f"<h2>Processing Complete</h2><p>Video: <strong>{safe_title}</strong></p>"
-                     f"<p>{clips_count} clips are ready for review in your dashboard.</p>",
+                subject=f"✅ {clips_count} clips siap direview — {video_title}",
+                body=(
+                    f"<h2>Processing Complete</h2>"
+                    f"<p>Video: <strong>{safe_title}</strong></p>"
+                    f"<p>{clips_count} clips siap direview di dashboard kamu.</p>"
+                    + (f"<p>🤖 AI Provider: {html.escape(provider_used)}</p>" if provider_used else "")
+                ),
             ),
             return_exceptions=True,
         )
 
-    async def notify_job_error(self, video_title: str, error: str, user_email: str) -> None:
+    async def notify_job_error(
+        self,
+        video_title: str,
+        error: str,
+        user_email: str,
+        stage: str = "",
+    ) -> None:
         """Notify user of pipeline failure."""
         safe_title = html.escape(video_title)
         safe_error = html.escape(error[:200])
+        stage_line = f"\nStage: <b>{html.escape(stage)}</b>" if stage else ""
         message = (
-            f"❌ <b>Processing Failed</b>\n\n"
-            f"Video: <i>{safe_title}</i>\n"
-            f"Error: {safe_error}"
+            f"❌ Error di stage <b>{html.escape(stage) if stage else 'pipeline'}</b>\n"
+            f"Video: {safe_title}{stage_line}\n"
+            f"Error: {safe_error}\n\n"
+            f"Pipeline akan resume dari checkpoint ini."
         )
         await asyncio.gather(
             self.send_telegram(message),
             self.send_email(
                 to=user_email,
                 subject=f"❌ Processing failed: {safe_title}",
-                body=f"<h2>Processing Failed</h2><p>Video: <strong>{safe_title}</strong></p>"
-                     f"<pre>{html.escape(error)}</pre>",
+                body=(
+                    f"<h2>Processing Failed</h2>"
+                    f"<p>Video: <strong>{safe_title}</strong></p>"
+                    + (f"<p>Stage: {html.escape(stage)}</p>" if stage else "")
+                    + f"<pre>{html.escape(error)}</pre>"
+                ),
             ),
             return_exceptions=True,
         )
+
+    async def notify_provider_fallback(
+        self,
+        from_provider: str,
+        to_provider: str,
+        reason: str = "",
+    ) -> None:
+        """Notify when AI provider falls back to next in chain."""
+        reason_line = f"\nAlasan: {html.escape(reason)}" if reason else ""
+        message = (
+            f"⚠️ AI fallback: <b>{html.escape(from_provider)}</b> → <b>{html.escape(to_provider)}</b>"
+            f"{reason_line}"
+        )
+        await self.send_telegram(message)
 
     async def notify_upload_success(self, clip_title: str, platform: str, user_email: str) -> None:
         """Notify on successful platform upload."""
