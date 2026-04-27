@@ -254,8 +254,8 @@ async def _stage_ai_analysis(video, db):
         db.add(clip)
 
     video.checkpoint = "ai_done"
+    logger.info(f"AI analysis done via {analysis.provider_used} ({len(analysis.clips)} clips, {analysis.tokens_used} tokens)")
     await db.commit()
-    await brain.close()
 
 
 async def _stage_qc_filtering(video, db):

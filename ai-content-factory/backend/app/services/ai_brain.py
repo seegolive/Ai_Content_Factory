@@ -1,18 +1,15 @@
-"""AI Brain service — analyzes transcripts and generates viral clip suggestions via OpenRouter."""
+"""AI Brain service — multi-model fallback (Groq → Gemini Flash → GPT-4o-mini)."""
 import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import httpx
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.services.transcription import TranscriptResult
-
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 @dataclass
@@ -26,6 +23,7 @@ class ClipSuggestion:
     hashtags: List[str]
     thumbnail_prompt: str
     reason: str
+    moment_type: str = "epic"  # clutch|funny|achievement|rage|epic|fail
 
 
 @dataclass
@@ -34,148 +32,103 @@ class AIAnalysisResult:
     processing_time: float
     model_used: str
     tokens_used: int
+    provider_used: str = ""
+    summary: str = ""
 
 
-ANALYSIS_SYSTEM_PROMPT = """You are an expert viral content analyst specializing in short-form video clips.
-Your task is to analyze a video transcript and identify the most viral-worthy segments.
+# ── Provider chain: tried in order, first success wins ──────────────────────
+def _build_provider_chain() -> list:
+    return [
+        {
+            "name": "Groq",
+            "base_url": settings.GROQ_BASE_URL,
+            "api_key": settings.GROQ_API_KEY,
+            "model": settings.GROQ_MODEL,
+        },
+        {
+            "name": "OpenRouter Gemini Flash",
+            "base_url": settings.OPENROUTER_BASE_URL,
+            "api_key": settings.OPENROUTER_API_KEY,
+            "model": settings.OPENROUTER_MODEL,
+        },
+        {
+            "name": "OpenRouter GPT-4o-mini",
+            "base_url": settings.OPENROUTER_BASE_URL,
+            "api_key": settings.OPENROUTER_API_KEY,
+            "model": settings.OPENROUTER_FALLBACK_MODEL,
+        },
+    ]
 
-Viral scoring criteria (total 100 points):
-- Emotional impact (0-25): Does it evoke strong emotion? Surprise, inspiration, humor, shock?
-- Information density (0-20): Is there valuable, actionable, or surprising information?
-- Hook strength in first 5 seconds (0-25): Does it grab attention immediately?
-- Relatability & shareability (0-15): Would people share this? Tag friends?
-- Call-to-action potential (0-15): Does it drive engagement, curiosity, or follow-through?
 
-For each clip, generate:
-1. start_time and end_time (in seconds) — optimal segment, 30-90 seconds
+# ── System prompt: Indonesian gaming content specialist ──────────────────────
+GAMING_SYSTEM_PROMPT = """Kamu adalah analis konten gaming Indonesia yang ahli mendeteksi momen viral dari transcript stream/video gaming.
+
+Kamu memahami konteks gaming Indonesia:
+- Kata-kata exclamation gamer: "wah gila", "aduh", "anjir", "yes!", "dari mana tuh", "ez", "gg", "noob", "pro banget"
+- Tipe momen: clutch (1vX, menang tipis), rage (frustrasi), funny (lucu/fail), achievement (capai sesuatu), epic (momen luar biasa), fail (kesalahan lucu)
+- Preferensi audiens gaming Indonesia: reaksi ekspresif, momen tidak terduga, comeback dramatis, humor gaming
+
+Viral scoring untuk gaming content (total 100 poin):
+- Reaksi ekspresif streamer (0-30): teriak, exclamation, shock, tawa
+- Kelangkaan momen (0-25): clutch 1v4, first achievement, never-seen-before
+- Hook strength 5 detik pertama (0-25): langsung action atau tension tinggi
+- Relatability & shareability (0-20): "ini gue banget", "tag temen lo"
+
+Untuk setiap clip, generate:
+1. start_time dan end_time (dalam detik) — segmen optimal, 30-90 detik
 2. viral_score (0-100)
-3. titles: exactly 3 variants (clickbait-but-honest, curiosity gap, how-to format)
-4. hook_text: the first sentence that grabs attention in <10 words
-5. description: 2-3 sentence SEO-optimized description with keywords
-6. hashtags: 10-15 relevant hashtags without the # symbol
-7. thumbnail_prompt: a SDXL image prompt describing the ideal thumbnail
-8. reason: 1-2 sentences explaining why this segment is viral
+3. moment_type: salah satu dari "clutch", "funny", "achievement", "rage", "epic", "fail"
+4. titles: TEPAT 3 varian (emosional, curiosity gap, achievement-style) — dalam Bahasa Indonesia
+5. hook_text: kalimat pembuka <10 kata yang langsung menarik perhatian
+6. description: 2-3 kalimat deskripsi SEO YouTube Bahasa Indonesia dengan keywords
+7. hashtags: 10-15 hashtag relevan TANPA simbol #
+8. thumbnail_prompt: deskripsi gambar SDXL untuk thumbnail ideal
+9. reason: 1-2 kalimat kenapa segmen ini viral
 
-Return ONLY a valid JSON object with this structure:
+Output HANYA JSON valid. TIDAK ADA teks di luar JSON. Schema:
 {
   "clips": [
     {
       "start_time": 12.5,
       "end_time": 75.2,
       "viral_score": 87,
-      "titles": ["Title 1", "Title 2", "Title 3"],
-      "hook_text": "Nobody told you this about money",
+      "moment_type": "clutch",
+      "titles": ["Judul 1", "Judul 2", "Judul 3"],
+      "hook_text": "Gak nyangka bisa survive dari sini...",
       "description": "...",
-      "hashtags": ["personalfinance", "moneytips"],
+      "hashtags": ["gaming", "battlefield6", "indonesia"],
       "thumbnail_prompt": "...",
       "reason": "..."
     }
-  ]
+  ],
+  "summary": "Ringkasan singkat video/stream ini"
 }
 
-Identify 5-15 clips. Minimum viral_score to include: 60."""
+Identifikasi 5-15 clip terbaik. Minimum viral_score untuk diinclude: 60.
+Urutkan clips dari viral_score tertinggi ke terendah."""
 
 
 class AIBrainService:
-    def __init__(self):
-        self._client = httpx.AsyncClient(
-            base_url=OPENROUTER_BASE_URL,
+    async def _call_provider(
+        self,
+        provider: dict,
+        messages: list,
+        max_tokens: int,
+    ) -> dict:
+        """Call a single provider. Raises on any error."""
+        async with httpx.AsyncClient(
+            base_url=provider["base_url"],
             headers={
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {provider['api_key']}",
                 "HTTP-Referer": "https://ai-content-factory.app",
                 "X-Title": "AI Content Factory",
             },
-            timeout=120.0,
-        )
-
-    async def analyze_transcript(
-        self,
-        transcript: TranscriptResult,
-        channel_info: Optional[dict] = None,
-    ) -> AIAnalysisResult:
-        """Analyze transcript and return viral clip suggestions."""
-        start = time.perf_counter()
-
-        # Build transcript text with timestamps
-        segments_text = "\n".join(
-            f"[{seg.start:.1f}s - {seg.end:.1f}s]: {seg.text}"
-            for seg in transcript.segments
-        )
-
-        channel_context = ""
-        if channel_info:
-            channel_context = f"\nChannel context: {json.dumps(channel_info)}"
-
-        user_message = f"""Analyze this video transcript and identify viral clips.
-
-Video duration: {transcript.duration:.1f} seconds
-Language: {transcript.language}
-Word count: {transcript.word_count}
-{channel_context}
-
-TRANSCRIPT:
-{segments_text}
-
-Full text:
-{transcript.full_text[:4000]}
-"""
-
-        response = await self._call_openrouter(
-            messages=[
-                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            model=settings.OPENROUTER_MODEL,
-            max_tokens=4000,
-        )
-
-        elapsed = time.perf_counter() - start
-
-        # Parse JSON response
-        clips = self._parse_clip_suggestions(response["content"])
-
-        return AIAnalysisResult(
-            clips=clips,
-            processing_time=elapsed,
-            model_used=response["model"],
-            tokens_used=response.get("tokens_used", 0),
-        )
-
-    async def generate_titles(self, clip_info: dict) -> List[str]:
-        """Generate 3 title variants for a clip."""
-        response = await self._call_openrouter(
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Generate 3 viral YouTube title variants for this clip. "
-                    f"Return JSON array only.\n\nClip info: {json.dumps(clip_info)}",
-                }
-            ],
-            model=settings.OPENROUTER_FALLBACK_MODEL,
-            max_tokens=300,
-        )
-        try:
-            return json.loads(response["content"])
-        except json.JSONDecodeError:
-            return [clip_info.get("title", "Untitled")]
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        reraise=True,
-    )
-    async def _call_openrouter(
-        self,
-        messages: list,
-        model: str,
-        max_tokens: int = 2000,
-    ) -> dict:
-        """Call OpenRouter API with retry and fallback."""
-        try:
-            resp = await self._client.post(
+            timeout=90.0,
+        ) as client:
+            resp = await client.post(
                 "/chat/completions",
                 json={
-                    "model": model,
+                    "model": provider["model"],
                     "messages": messages,
                     "max_tokens": max_tokens,
                     "response_format": {"type": "json_object"},
@@ -185,40 +138,179 @@ Full text:
             data = resp.json()
             return {
                 "content": data["choices"][0]["message"]["content"],
-                "model": data.get("model", model),
+                "model": data.get("model", provider["model"]),
                 "tokens_used": data.get("usage", {}).get("total_tokens", 0),
+                "provider_name": provider["name"],
             }
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                logger.warning("OpenRouter rate limit hit, retrying...")
-                raise
-            # Try fallback model on other errors
-            if model != settings.OPENROUTER_FALLBACK_MODEL:
-                logger.warning(f"Primary model failed ({e}), trying fallback")
-                return await self._call_openrouter(
-                    messages, settings.OPENROUTER_FALLBACK_MODEL, max_tokens
-                )
-            raise
 
-    def _parse_clip_suggestions(self, content: str) -> List[ClipSuggestion]:
-        """Parse JSON response into ClipSuggestion objects."""
+    async def _call_with_fallback(
+        self,
+        messages: list,
+        max_tokens: int = 4000,
+    ) -> Tuple[str, str, str, int]:
+        """Try providers in order. Return (content, provider_name, model, tokens_used)."""
+        chain = _build_provider_chain()
+        last_error: Optional[Exception] = None
+
+        for provider in chain:
+            if not provider["api_key"]:
+                logger.warning(f"Skipping {provider['name']} — no API key configured")
+                continue
+            try:
+                logger.info(f"Trying provider: {provider['name']} / {provider['model']}")
+                result = await self._call_provider(provider, messages, max_tokens)
+                logger.info(f"Success: {provider['name']} ({result['tokens_used']} tokens)")
+                return (
+                    result["content"],
+                    result["provider_name"],
+                    result["model"],
+                    result["tokens_used"],
+                )
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                logger.warning(f"{provider['name']} HTTP {status} — trying next provider")
+                last_error = e
+                if status not in (429, 500, 502, 503, 504):
+                    # Don't fall through for unexpected auth / not-found errors
+                    break
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                logger.warning(f"{provider['name']} connection error: {e} — trying next provider")
+                last_error = e
+
+        raise RuntimeError(
+            f"All AI providers failed. Last error: {last_error}"
+        )
+
+    async def analyze_transcript(
+        self,
+        transcript: TranscriptResult,
+        channel_info: Optional[dict] = None,
+        game_title: str = "",
+        channel_name: str = "",
+    ) -> AIAnalysisResult:
+        """Analyze transcript and return viral clip suggestions."""
+        start = time.perf_counter()
+
+        segments_text = "\n".join(
+            f"[{seg.start:.1f}s - {seg.end:.1f}s]: {seg.text}"
+            for seg in transcript.segments
+        )
+
+        context_parts = []
+        if game_title:
+            context_parts.append(f"Game: {game_title}")
+        if channel_name:
+            context_parts.append(f"Channel: {channel_name}")
+        if channel_info:
+            context_parts.append(f"Channel info: {json.dumps(channel_info)}")
+
+        context_block = "\n".join(context_parts)
+
+        user_message = f"""Analisis transcript video gaming ini dan identifikasi momen-momen viral.
+
+Video duration: {transcript.duration:.1f} detik
+Language: {transcript.language}
+Word count: {transcript.word_count}
+{context_block}
+
+TRANSCRIPT:
+{segments_text}
+
+Full text:
+{transcript.full_text[:5000]}
+"""
+
+        messages = [
+            {"role": "system", "content": GAMING_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+
+        content, provider_name, model_used, tokens_used = await self._call_with_fallback(
+            messages, max_tokens=4000
+        )
+
+        # If JSON is malformed, retry once with explicit instruction
+        clips_data = self._try_parse_clips(content)
+        if clips_data is None:
+            logger.warning("First parse failed, retrying with explicit JSON instruction")
+            messages.append({"role": "assistant", "content": content})
+            messages.append({
+                "role": "user",
+                "content": "Output di atas bukan JSON valid. Coba lagi — output HANYA JSON valid, tidak ada teks lain.",
+            })
+            content, provider_name, model_used, tokens_used = await self._call_with_fallback(
+                messages, max_tokens=4000
+            )
+            clips_data = self._try_parse_clips(content)
+
+        elapsed = time.perf_counter() - start
+        raw = clips_data or {}
+        clips = self._parse_clip_suggestions(raw)
+
+        return AIAnalysisResult(
+            clips=clips,
+            processing_time=elapsed,
+            model_used=model_used,
+            tokens_used=tokens_used,
+            provider_used=provider_name,
+            summary=raw.get("summary", ""),
+        )
+
+    async def generate_titles(
+        self,
+        clip_info: dict,
+        game_title: str = "",
+    ) -> List[str]:
+        """Generate 3 viral title variants for a clip (Indonesian gaming style)."""
+        game_ctx = f" untuk game {game_title}" if game_title else ""
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    f"Generate 3 judul YouTube viral{game_ctx} dalam Bahasa Indonesia. "
+                    "Style: emosional, curiosity gap, achievement. "
+                    "Return JSON array of strings ONLY.\n\n"
+                    f"Clip info: {json.dumps(clip_info)}"
+                ),
+            }
+        ]
         try:
-            # Strip markdown code fences that some models add despite json_object mode
+            content, _, _, _ = await self._call_with_fallback(messages, max_tokens=300)
             content = content.strip()
             if content.startswith("```"):
                 content = content.split("```", 2)[1]
                 if content.startswith("json"):
                     content = content[4:]
                 content = content.rsplit("```", 1)[0].strip()
+            return json.loads(content)
+        except (json.JSONDecodeError, RuntimeError) as e:
+            logger.warning(f"generate_titles failed: {e}")
+            return [clip_info.get("title", "Untitled")]
 
-            data = json.loads(content)
-            clips = []
-            for item in data.get("clips", []):
+    def _try_parse_clips(self, content: str) -> Optional[dict]:
+        """Try to parse JSON from response. Returns dict or None."""
+        try:
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("```", 2)[1]
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.rsplit("```", 1)[0].strip()
+            return json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    def _parse_clip_suggestions(self, data: dict) -> List[ClipSuggestion]:
+        """Parse dict into ClipSuggestion objects, sorted by viral_score desc."""
+        clips = []
+        for item in data.get("clips", []):
+            try:
                 clips.append(
                     ClipSuggestion(
                         start_time=float(item["start_time"]),
                         end_time=float(item["end_time"]),
                         viral_score=int(item.get("viral_score", 50)),
+                        moment_type=item.get("moment_type", "epic"),
                         titles=item.get("titles", [item.get("title", "Untitled")]),
                         hook_text=item.get("hook_text", ""),
                         description=item.get("description", ""),
@@ -227,10 +319,8 @@ Full text:
                         reason=item.get("reason", ""),
                     )
                 )
-            return sorted(clips, key=lambda c: c.viral_score, reverse=True)
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.error(f"Failed to parse AI response: {e}\nContent: {content[:500]}")
-            return []
+            except (KeyError, ValueError, TypeError) as e:
+                logger.warning(f"Skipping malformed clip item: {e}")
+        return sorted(clips, key=lambda c: c.viral_score, reverse=True)
 
-    async def close(self):
-        await self._client.aclose()
+

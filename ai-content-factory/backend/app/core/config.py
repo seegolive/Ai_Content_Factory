@@ -39,9 +39,15 @@ class Settings(BaseSettings):
     # YouTube
     YOUTUBE_API_KEY: str = ""
 
-    # OpenRouter
+    # Groq (primary AI — free, fastest)
+    GROQ_API_KEY: str = ""
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+
+    # OpenRouter (fallback 1 & 2)
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4-5"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_MODEL: str = "google/gemini-2.0-flash-001"
     OPENROUTER_FALLBACK_MODEL: str = "openai/gpt-4o-mini"
 
     # Whisper
