@@ -100,7 +100,7 @@ services:
       - ACRCLOUD_ACCESS_SECRET=${ACRCLOUD_ACCESS_SECRET}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q celery,pipeline,distribute,analytics
     depends_on:
       - postgres
       - redis

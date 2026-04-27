@@ -162,6 +162,11 @@ def process_video_pipeline(self, video_id: str):
 async def _stage_input_validation(video, db):
     from app.services.copyright_check import CopyrightCheckService
 
+    # ── Download YouTube URL if no local file ────────────────────────────────
+    if not video.file_path and video.original_url:
+        logger.info(f"[Pipeline] Downloading YouTube video: {video.original_url}")
+        await _download_youtube_video(video, db)
+
     # Validate file exists (for uploads) or URL is accessible
     if video.file_path and not os.path.exists(video.file_path):
         raise FileNotFoundError(f"Video file missing: {video.file_path}")
@@ -176,6 +181,63 @@ async def _stage_input_validation(video, db):
 
     video.checkpoint = "input_validated"
     await db.commit()
+
+
+async def _download_youtube_video(video, db):
+    """Download a YouTube video using yt-dlp and update video.file_path + title."""
+    import yt_dlp
+
+    storage_dir = os.path.join("storage", "videos")
+    os.makedirs(storage_dir, exist_ok=True)
+    output_path = os.path.join(storage_dir, f"{video.id}.%(ext)s")
+
+    ydl_opts = {
+        "format": "bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best",
+        "outtmpl": output_path,
+        "quiet": True,
+        "no_warnings": True,
+        "merge_output_format": "mp4",
+        "noprogress": True,
+        "postprocessors": [{
+            "key": "FFmpegVideoConvertor",
+            "preferedformat": "mp4",
+        }],
+    }
+
+    loop = asyncio.get_event_loop()
+
+    def _do_download():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video.original_url, download=True)
+            return info
+
+    info = await loop.run_in_executor(None, _do_download)
+
+    # Locate the downloaded file
+    downloaded_path = os.path.join(storage_dir, f"{video.id}.mp4")
+    if not os.path.exists(downloaded_path):
+        # try to find it
+        for f in os.listdir(storage_dir):
+            if f.startswith(str(video.id)):
+                downloaded_path = os.path.join(storage_dir, f)
+                break
+
+    if not os.path.exists(downloaded_path):
+        raise FileNotFoundError(f"yt-dlp download failed: file not found for video {video.id}")
+
+    # Update video record
+    file_size_bytes = os.path.getsize(downloaded_path)
+    video.file_path = downloaded_path
+    video.file_size_mb = file_size_bytes / (1024 * 1024)
+    if info.get("title"):
+        video.title = info["title"]
+    if info.get("duration"):
+        video.duration_seconds = float(info["duration"])
+    if info.get("thumbnail"):
+        video.thumbnail_url = info["thumbnail"]
+
+    await db.commit()
+    logger.info(f"[Pipeline] Downloaded: {video.title!r} ({video.file_size_mb:.1f} MB) → {downloaded_path}")
 
 
 async def _stage_transcription(video, db):
