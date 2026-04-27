@@ -57,7 +57,7 @@ def process_video_pipeline(self, video_id: str):
         from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
         from app.core.config import settings
         from app.models.user import User
-        from app.models.video import Video
+        from app.models.video import Video, YoutubeAccount
 
         # Use NullPool to avoid event-loop conflicts in Celery forked workers
         _engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
@@ -508,11 +508,23 @@ async def _stage_video_processing(video, db):
     channel_config = None
     default_game_profile = None
 
-    if video.youtube_account_id:
+    # Resolve which YouTube account to use for crop config.
+    # If the video was not tagged with an account, fall back to the user's first connected account.
+    yt_account_id_for_config = video.youtube_account_id
+    if not yt_account_id_for_config:
+        yt_fb = await db.execute(
+            select(YoutubeAccount).where(YoutubeAccount.user_id == video.user_id).limit(1)
+        )
+        yt_fb_row = yt_fb.scalars().first()
+        if yt_fb_row:
+            yt_account_id_for_config = yt_fb_row.id
+            logger.info(f"[Pipeline] No yt_account on video, using fallback account {yt_account_id_for_config}")
+
+    if yt_account_id_for_config:
         # Load channel config
         cfg_result = await db.execute(
             select(ChannelCropConfig).where(
-                ChannelCropConfig.youtube_account_id == video.youtube_account_id
+                ChannelCropConfig.youtube_account_id == yt_account_id_for_config
             )
         )
         channel_config = cfg_result.scalars().first()
