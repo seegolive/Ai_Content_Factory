@@ -25,6 +25,23 @@ def _run_async(coro):
         loop.close()
 
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def _task_db_session():
+    """Create a NullPool DB session for use in Celery forked workers."""
+    from sqlalchemy.pool import NullPool
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from app.core.config import settings
+    _engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    _Session = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with _Session() as session:
+            yield session
+    finally:
+        await _engine.dispose()
+
+
 @celery_app.task(bind=True, max_retries=3, name="app.workers.tasks.analytics.sync_channel_analytics")
 def sync_channel_analytics(self, youtube_account_id: str) -> dict[str, Any]:
     """
@@ -58,14 +75,13 @@ def generate_weekly_insight_report(self, youtube_account_id: str) -> dict[str, A
 
 
 async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, Any]:
-    from app.core.database import AsyncSessionLocal
     from app.services.analytics.youtube_analytics_fetcher import (
         YouTubeAnalyticsFetcher,
         detect_drop_offs,
         detect_peak_moments,
     )
 
-    async with AsyncSessionLocal() as db:
+    async with _task_db_session() as db:
         # Load youtube account
         from sqlalchemy import select, text
 
@@ -94,20 +110,35 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
         logger.info(f"[sync_analytics] Fetched {len(videos)} videos from YouTube")
 
         end_date = date.today()
-        start_date = end_date - timedelta(days=7)
+
+        import json as _json
 
         synced = 0
+        # Track top-viewed videos for retention curve batch (max 5 per sync run)
+        retention_candidates: list[tuple[int, str, Optional[str]]] = []  # (views, yt_id, video_id)
+
         for video_meta in videos:
             try:
-                # Match to internal video via youtube_video_id in video_analytics
-                # First upsert the analytics data
+                # Use lifetime start date (from published_at) to get all-time analytics.
+                # Fall back to 365 days if published_at is unavailable.
+                if video_meta.published_at:
+                    start_date = video_meta.published_at.date()
+                else:
+                    start_date = end_date - timedelta(days=365)
+
                 analytics = await fetcher.fetch_video_analytics(
                     video_meta.youtube_id, start_date, end_date
                 )
                 if not analytics:
-                    continue
+                    # Still record video metadata so overview counts are accurate
+                    analytics_views = video_meta.views
+                else:
+                    analytics_views = analytics.views if analytics.views > 0 else video_meta.views
 
-                # Find matching internal video
+                # Add rate-limit delay between analytics API calls
+                await asyncio.sleep(0.3)
+
+                # Try to find matching internal video (optional — video_id can be NULL)
                 vid_result = await db.execute(
                     text(
                         """
@@ -121,101 +152,129 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                     {"channel_id": channel_id, "title_pattern": f"%{video_meta.title[:30]}%"},
                 )
                 vid_row = vid_result.fetchone()
-                if not vid_row:
-                    continue
+                video_id = str(vid_row[0]) if vid_row else None
 
-                video_id = str(vid_row[0])
-
-                # Upsert analytics snapshot
-                await db.execute(
-                    text(
-                        """
-                        INSERT INTO video_analytics (
-                            id, video_id, youtube_video_id, channel_id, snapshot_date,
-                            views, likes, comments, shares, watch_time_minutes,
-                            avg_view_duration_seconds, avg_view_percentage,
-                            impressions, impression_ctr,
-                            subscribers_gained, subscribers_lost,
-                            traffic_sources, device_types, top_geographies, pulled_at
-                        ) VALUES (
-                            gen_random_uuid(), :video_id, :yt_id, :channel_id, :snapshot_date,
-                            :views, :likes, :comments, :shares, :watch_time,
-                            :avg_duration, :avg_pct,
-                            :impressions, :ctr,
-                            :subs_gained, :subs_lost,
-                            :traffic::jsonb, :devices::jsonb, :geos::jsonb, now()
-                        )
-                        ON CONFLICT (video_id, snapshot_date) DO UPDATE SET
-                            views = EXCLUDED.views,
-                            likes = EXCLUDED.likes,
-                            watch_time_minutes = EXCLUDED.watch_time_minutes,
-                            pulled_at = now()
-                        """
-                    ),
-                    {
-                        "video_id": video_id,
-                        "yt_id": video_meta.youtube_id,
-                        "channel_id": channel_id,
-                        "snapshot_date": end_date,
-                        "views": analytics.views,
-                        "likes": analytics.likes,
-                        "comments": analytics.comments,
-                        "shares": analytics.shares,
-                        "watch_time": analytics.watch_time_minutes,
-                        "avg_duration": analytics.avg_view_duration_seconds,
-                        "avg_pct": analytics.avg_view_percentage,
-                        "impressions": analytics.impressions,
-                        "ctr": analytics.impression_ctr,
-                        "subs_gained": analytics.subscribers_gained,
-                        "subs_lost": analytics.subscribers_lost,
-                        "traffic": str(analytics.traffic_sources).replace("'", '"'),
-                        "devices": str(analytics.device_types).replace("'", '"'),
-                        "geos": "[]",
-                    },
-                )
-
-                # Fetch retention curve if not yet stored
-                existing_curve = await db.execute(
-                    text("SELECT id FROM video_retention_curves WHERE video_id = :vid"),
-                    {"vid": video_id},
-                )
-                if not existing_curve.fetchone():
-                    curve_points = await fetcher.fetch_retention_curve(video_meta.youtube_id)
-                    if curve_points:
-                        import json
-                        peaks = detect_peak_moments(curve_points)
-                        drops = detect_drop_offs(curve_points)
-                        points_json = json.dumps([
-                            {"elapsed_ratio": p.elapsed_ratio, "retention_ratio": p.retention_ratio}
-                            for p in curve_points
-                        ])
-                        await db.execute(
-                            text(
-                                """
-                                INSERT INTO video_retention_curves
-                                    (id, video_id, youtube_video_id, data_points, peak_moments, drop_off_points, pulled_at)
-                                VALUES
-                                    (gen_random_uuid(), :video_id, :yt_id, :points::jsonb, :peaks::jsonb, :drops::jsonb, now())
-                                ON CONFLICT (video_id) DO NOTHING
-                                """
-                            ),
-                            {
-                                "video_id": video_id,
-                                "yt_id": video_meta.youtube_id,
-                                "points": points_json,
-                                "peaks": json.dumps(peaks),
-                                "drops": json.dumps(drops),
-                            },
-                        )
+                if analytics:
+                    # Upsert analytics snapshot — video_id is nullable since migration 004
+                    await db.execute(
+                        text(
+                            """
+                            INSERT INTO video_analytics (
+                                id, video_id, youtube_video_id, channel_id, snapshot_date,
+                                video_title, published_at,
+                                views, likes, comments, shares, watch_time_minutes,
+                                avg_view_duration_seconds, avg_view_percentage,
+                                impressions, impression_ctr,
+                                subscribers_gained, subscribers_lost,
+                                traffic_sources, device_types, top_geographies, pulled_at
+                            ) VALUES (
+                                gen_random_uuid(), :video_id, :yt_id, :channel_id, :snapshot_date,
+                                :video_title, :published_at,
+                                :views, :likes, :comments, :shares, :watch_time,
+                                :avg_duration, :avg_pct,
+                                :impressions, :ctr,
+                                :subs_gained, :subs_lost,
+                                CAST(:traffic AS jsonb), CAST(:devices AS jsonb), CAST(:geos AS jsonb), now()
+                            )
+                            ON CONFLICT (youtube_video_id, snapshot_date, channel_id) DO UPDATE SET
+                                video_id = COALESCE(EXCLUDED.video_id, video_analytics.video_id),
+                                video_title = COALESCE(EXCLUDED.video_title, video_analytics.video_title),
+                                views = EXCLUDED.views,
+                                likes = EXCLUDED.likes,
+                                watch_time_minutes = EXCLUDED.watch_time_minutes,
+                                pulled_at = now()
+                            """
+                        ),
+                        {
+                            "video_id": video_id,
+                            "yt_id": video_meta.youtube_id,
+                            "channel_id": channel_id,
+                            "snapshot_date": end_date,
+                            "video_title": video_meta.title,
+                            "published_at": video_meta.published_at,
+                            # Prefer Analytics API lifetime views; fall back to YouTube Data API
+                            # statistics.viewCount (video_meta.views) when Analytics returns 0.
+                            "views": analytics.views if analytics.views > 0 else video_meta.views,
+                            "likes": analytics.likes if analytics.likes > 0 else video_meta.likes,
+                            "comments": analytics.comments,
+                            "shares": analytics.shares,
+                            "watch_time": analytics.watch_time_minutes,
+                            "avg_duration": analytics.avg_view_duration_seconds,
+                            "avg_pct": analytics.avg_view_percentage,
+                            "impressions": analytics.impressions,
+                            "ctr": analytics.impression_ctr,
+                            "subs_gained": analytics.subscribers_gained,
+                            "subs_lost": analytics.subscribers_lost,
+                            "traffic": _json.dumps(analytics.traffic_sources),
+                            "devices": _json.dumps(analytics.device_types),
+                            "geos": "[]",
+                        },
+                    )
 
                 synced += 1
+
+                # Queue video for retention curve if it has enough views (≥10 all-time).
+                # Process at most 5 retention curves per sync run to avoid SSL overload.
+                if video_meta.views >= 10:
+                    retention_candidates.append((video_meta.views, video_meta.youtube_id, video_id))
 
             except Exception as exc:
                 logger.warning(f"[sync_analytics] Failed for video {video_meta.youtube_id}: {exc}")
                 continue
 
-        # 3. Fetch channel daily stats for last 7 days
-        daily_stats = await fetcher.fetch_channel_daily_stats(start_date, end_date)
+        # 2. Fetch retention curves — top 5 by all-time views, skip already fetched
+        retention_candidates.sort(key=lambda x: x[0], reverse=True)
+        curves_fetched = 0
+        for all_time_views, yt_id, vid_id in retention_candidates[:5]:
+            try:
+                existing_curve = await db.execute(
+                    text("SELECT id FROM video_retention_curves WHERE youtube_video_id = :yt_id"),
+                    {"yt_id": yt_id},
+                )
+                if existing_curve.fetchone():
+                    continue  # already have this curve
+                curve_points = await asyncio.wait_for(
+                    fetcher.fetch_retention_curve(yt_id),
+                    timeout=15.0,
+                )
+                if curve_points:
+                    peaks = detect_peak_moments(curve_points)
+                    drops = detect_drop_offs(curve_points)
+                    points_json = _json.dumps([
+                        {"elapsed_ratio": p.elapsed_ratio, "retention_ratio": p.retention_ratio}
+                        for p in curve_points
+                    ])
+                    await db.execute(
+                        text(
+                            """
+                            INSERT INTO video_retention_curves
+                                (id, video_id, youtube_video_id, data_points, peak_moments, drop_off_points, pulled_at)
+                            VALUES
+                                (gen_random_uuid(), :video_id, :yt_id, CAST(:points AS jsonb), CAST(:peaks AS jsonb), CAST(:drops AS jsonb), now())
+                            ON CONFLICT (youtube_video_id) DO NOTHING
+                            """
+                        ),
+                        {
+                            "video_id": vid_id,
+                            "yt_id": yt_id,
+                            "points": points_json,
+                            "peaks": _json.dumps(peaks),
+                            "drops": _json.dumps(drops),
+                        },
+                    )
+                    curves_fetched += 1
+                    logger.info(f"[sync_analytics] Retention curve saved for {yt_id} ({len(curve_points)} pts)")
+                await asyncio.sleep(0.5)
+            except asyncio.TimeoutError:
+                logger.warning(f"[sync_analytics] Retention curve timeout for {yt_id}")
+            except Exception as curve_exc:
+                logger.warning(f"[sync_analytics] Retention curve failed for {yt_id}: {curve_exc}")
+
+        logger.info(f"[sync_analytics] Retention curves: {curves_fetched} new saved")
+
+        # 3. Fetch channel daily stats for last 30 days
+        daily_start = end_date - timedelta(days=30)
+        daily_stats = await fetcher.fetch_channel_daily_stats(daily_start, end_date)
         import json as _json
         for day in daily_stats:
             try:
@@ -249,6 +308,13 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
         await db.commit()
         logger.info(f"[sync_analytics] Done. Synced {synced} videos for {channel_id}")
 
+        # Update last_analytics_sync timestamp on the account
+        await db.execute(
+            text("UPDATE youtube_accounts SET last_analytics_sync = now() WHERE id = :id"),
+            {"id": youtube_account_id},
+        )
+        await db.commit()
+
         # 4. Trigger DNA update
         update_content_dna.delay(youtube_account_id)
 
@@ -262,11 +328,10 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
 async def _update_content_dna_async(youtube_account_id: str) -> dict[str, Any]:
     from sqlalchemy import text
 
-    from app.core.database import AsyncSessionLocal
     from app.services.analytics.ai_insight_generator import AIInsightGenerator
     from app.services.analytics.content_dna_builder import ContentDNABuilder
 
-    async with AsyncSessionLocal() as db:
+    async with _task_db_session() as db:
         # Load account
         result = await db.execute(
             text("SELECT * FROM youtube_accounts WHERE id = :id"),
@@ -379,11 +444,10 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
     import json
     from sqlalchemy import text
 
-    from app.core.database import AsyncSessionLocal
     from app.services.analytics.ai_insight_generator import AIInsightGenerator
     from app.services.notification import NotificationService
 
-    async with AsyncSessionLocal() as db:
+    async with _task_db_session() as db:
         result = await db.execute(
             text("SELECT ya.*, u.email, u.name FROM youtube_accounts ya JOIN users u ON u.id = ya.user_id WHERE ya.id = :id"),
             {"id": youtube_account_id},
@@ -445,14 +509,53 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
         )
         unclipped_count = len(unclipped_result.fetchall())
 
-        ai = AIInsightGenerator()
-        report_data = await ai.generate_weekly_report(
-            channel_name=channel_name,
-            week_stats={"views": int(week_stats.get("views", 0)), "watch_time_minutes": float(week_stats.get("watch_time", 0)), "subscribers_net": int(week_stats.get("subs_net", 0))},
-            prev_week_stats={"views": int(prev_stats.get("views", 0))},
-            top_videos=[],
-            unclipped_count=unclipped_count,
+        # Context for AI: total videos with analytics data
+        total_videos_result = await db.execute(
+            text("SELECT COUNT(DISTINCT youtube_video_id) FROM video_analytics WHERE channel_id = :cid"),
+            {"cid": channel_id},
         )
+        total_videos_with_analytics = total_videos_result.scalar() or 0
+        curr_week_views = int(week_stats.get("views", 0))
+        prev_week_views = int(prev_stats.get("views", 0))
+
+        # Detect "current week data incomplete" — views this week are 0 or near 0
+        # but the channel has historical views. Don't blame the channel for missing data.
+        current_week_data_sparse = curr_week_views < 5 and prev_week_views > 0
+        is_new_channel = total_videos_with_analytics < 3 or curr_week_views == 0
+
+        # Clean up sentinel -1 from subscribers_net aggregation
+        raw_subs_net = int(week_stats.get("subs_net", 0))
+        subs_change_clean = raw_subs_net if raw_subs_net > -1 else 0
+
+        # Guard: no data at all — skip AI call, store a "not enough data" placeholder
+        if total_videos_with_analytics == 0 and curr_week_views == 0 and prev_week_views == 0:
+            report_data = {
+                "summary": f"Channel {channel_name} baru terhubung. Lakukan sync analytics pertama untuk mendapatkan laporan.",
+                "wins": ["Channel berhasil terhubung dengan AI Content Factory"],
+                "issues": [],
+                "recommendations": [
+                    {"priority": "high", "action": "Lakukan Sync Analytics", "reason": "Belum ada data analytics yang tersedia", "expected_impact": "Laporan mingguan akan tersedia setelah sync pertama"}
+                ],
+                "best_performing_content": "",
+                "focus_game_next_week": "",
+                "clip_opportunity_summary": "",
+            }
+        else:
+            ai = AIInsightGenerator()
+            report_data = await ai.generate_weekly_report(
+                channel_name=channel_name,
+                week_stats={
+                    "views": curr_week_views,
+                    "watch_time_minutes": float(week_stats.get("watch_time", 0)),
+                    "subscribers_net": subs_change_clean,
+                    "data_note": "Data minggu ini mungkin belum lengkap karena sync baru saja dilakukan" if current_week_data_sparse else "Data normal",
+                },
+                prev_week_stats={"views": prev_week_views},
+                top_videos=[],
+                unclipped_count=unclipped_count,
+                total_videos=total_videos_with_analytics,
+                is_new_channel=is_new_channel or current_week_data_sparse,
+            )
 
         views_change_pct = None
         prev_views = int(prev_stats.get("views", 0))
@@ -471,9 +574,9 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
                      estimated_viral_potential, raw_data_snapshot, generated_at)
                 VALUES
                     (gen_random_uuid(), :account_id, :channel_id, :week_start, :week_end,
-                     :summary, :wins::jsonb, :issues::jsonb, :recs::jsonb,
+                     :summary, CAST(:wins AS jsonb), CAST(:issues AS jsonb), CAST(:recs AS jsonb),
                      :clip_type, :views_pct, :subs_change,
-                     '{}'::jsonb, :raw::jsonb, now())
+                     '{}'::jsonb, CAST(:raw AS jsonb), now())
                 ON CONFLICT (channel_id, week_start) DO UPDATE SET
                     summary_text = EXCLUDED.summary_text,
                     key_wins = EXCLUDED.key_wins,
@@ -492,8 +595,8 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
                 "issues": json.dumps(report_data.get("issues", [])),
                 "recs": json.dumps(report_data.get("recommendations", [])),
                 "clip_type": report_data.get("best_performing_content", ""),
-                "views_pct": views_change_pct,
-                "subs_change": int(week_stats.get("subs_net", 0)),
+                "views_pct": views_change_pct if not current_week_data_sparse else None,
+                "subs_change": subs_change_clean,
                 "raw": json.dumps({"week_stats": week_stats, "prev_week_stats": prev_stats}),
             },
         )

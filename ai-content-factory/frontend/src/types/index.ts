@@ -32,6 +32,9 @@ export interface Video {
   duration_seconds?: number;
   copyright_status: CopyrightStatus;
   clips_count: number;
+  thumbnail_url?: string;
+  download_progress?: number;
+  quality_preference?: string;
   created_at: string;
   updated_at: string;
 }
@@ -47,12 +50,23 @@ export interface VideoStatusResponse {
   status: VideoStatus;
   checkpoint?: string;
   progress_percent: number;
+  download_progress?: number;
   current_stage?: string;
   eta_seconds?: number;
   error_message?: string;
 }
 
-export type MomentType = "clutch" | "funny" | "achievement" | "rage" | "epic" | "fail";
+export interface VideoPreviewResponse {
+  title: string;
+  thumbnail_url?: string;
+  duration_seconds?: number;
+  uploader?: string;
+  view_count?: number;
+  upload_date?: string;
+  available_qualities: string[];
+}
+
+export type MomentType = "clutch" | "funny" | "achievement" | "rage" | "epic" | "fail" | "tutorial";
 
 export interface Clip {
   id: string;
@@ -77,7 +91,14 @@ export interface Clip {
   qc_issues: { type: string; description: string; severity: string }[];
   review_status: ReviewStatus;
   reviewed_at?: string;
-  platform_status: Record<string, { status: string; video_id?: string }>;
+  platform_status: Record<string, { status: string; video_id?: string; error?: string }>;
+  publish_settings: {
+    title?: string;
+    description?: string;
+    hashtags?: string[];
+    privacy?: "public" | "unlisted" | "private";
+    category?: string;
+  };
   ai_provider_used?: string;
   created_at: string;
 }

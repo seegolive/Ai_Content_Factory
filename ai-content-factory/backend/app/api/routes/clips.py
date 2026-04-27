@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db
@@ -21,6 +21,7 @@ from app.schemas.clip import (
     ClipBulkReviewRequest,
     ClipOut,
     ClipPublishRequest,
+    ClipPublishSettingsRequest,
     ClipReviewRequest,
     ClipUpdateRequest,
 )
@@ -40,6 +41,50 @@ async def _get_clip_or_404(
     if not clip:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found")
     return clip
+
+
+@router.get("/clips/stats")
+async def get_clip_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return KPI counts for the current user's clips."""
+    # Base: all clips belonging to user
+    base = select(func.count()).select_from(Clip).where(Clip.user_id == current_user.id)
+
+    total_result          = await db.execute(base)
+    pending_result        = await db.execute(base.where(Clip.review_status == "pending"))
+    approved_result       = await db.execute(base.where(Clip.review_status == "approved"))
+    rejected_result       = await db.execute(base.where(Clip.review_status == "rejected"))
+
+    # published = has at least one platform_status entry with status="published"
+    # We query directly in Python after fetching published rows
+    published_result = await db.execute(
+        select(func.count()).select_from(Clip).where(
+            Clip.user_id == current_user.id,
+            Clip.platform_status.isnot(None),
+        )
+    )
+    # Narrow count: only clips where ANY platform value has status=published
+    # Use a JSON containment query via cast
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy import cast, literal
+    published_count_result = await db.execute(
+        select(func.count()).select_from(Clip).where(
+            Clip.user_id == current_user.id,
+            Clip.platform_status.cast(JSONB).op("@>")(
+                cast(literal('{"youtube": {"status": "published"}}'), JSONB)
+            ),
+        )
+    )
+
+    return {
+        "total":     total_result.scalar() or 0,
+        "pending":   pending_result.scalar() or 0,
+        "approved":  approved_result.scalar() or 0,
+        "rejected":  rejected_result.scalar() or 0,
+        "published": published_count_result.scalar() or 0,
+    }
 
 
 @router.get("/videos/{video_id}/clips", response_model=List[ClipOut])
@@ -80,6 +125,43 @@ async def list_clips(
     result = await db.execute(query)
     clips = result.scalars().all()
     return [ClipOut.model_validate(c) for c in clips]
+
+
+@router.get("/clips/{clip_id}", response_model=ClipOut)
+async def get_clip(
+    clip_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single clip by ID."""
+    clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    return ClipOut.model_validate(clip)
+
+
+@router.patch("/clips/{clip_id}/publish-settings", response_model=ClipOut)
+async def save_publish_settings(
+    clip_id: uuid.UUID,
+    body: ClipPublishSettingsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save YouTube publish settings (title, description, hashtags, privacy) for a clip."""
+    clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    settings_update: dict = {"privacy": body.privacy}
+    if body.title is not None:
+        clip.title = body.title
+        settings_update["title"] = body.title
+    if body.description is not None:
+        clip.description = body.description
+        settings_update["description"] = body.description
+    if body.hashtags is not None:
+        clip.hashtags = body.hashtags
+        settings_update["hashtags"] = body.hashtags
+    if body.category is not None:
+        settings_update["category"] = body.category
+    clip.publish_settings = {**clip.publish_settings, **settings_update}
+    await db.commit()
+    return ClipOut.model_validate(clip)
 
 
 @router.patch("/clips/{clip_id}/review", response_model=ClipOut)
@@ -160,24 +242,41 @@ async def publish_clip(
             detail="Clip must be approved before publishing",
         )
 
-    # Verify YouTube account ownership before dispatching
-    if body.youtube_account_id:
-        from app.models.video import YoutubeAccount
-        yt_result = await db.execute(
-            select(YoutubeAccount).where(
-                YoutubeAccount.id == body.youtube_account_id,
-                YoutubeAccount.user_id == current_user.id,
+    # Verify YouTube account ownership before dispatching,
+    # or auto-select the user's first YouTube account if none specified.
+    from app.models.video import YoutubeAccount
+    resolved_youtube_account_id = body.youtube_account_id
+    if "youtube" in body.platforms:
+        if resolved_youtube_account_id:
+            yt_result = await db.execute(
+                select(YoutubeAccount).where(
+                    YoutubeAccount.id == resolved_youtube_account_id,
+                    YoutubeAccount.user_id == current_user.id,
+                )
             )
-        )
-        if not yt_result.scalar_one_or_none():
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="YouTube account not found")
+            if not yt_result.scalar_one_or_none():
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="YouTube account not found")
+        else:
+            # Auto-select the user's first connected YouTube account
+            yt_result = await db.execute(
+                select(YoutubeAccount).where(YoutubeAccount.user_id == current_user.id).limit(1)
+            )
+            yt_account = yt_result.scalar_one_or_none()
+            if yt_account:
+                resolved_youtube_account_id = yt_account.id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No YouTube account connected. Please connect one in Settings.",
+                )
 
     try:
         from app.workers.tasks.distribute import distribute_clip
         task = distribute_clip.delay(
             str(clip_id),
             body.platforms,
-            str(body.youtube_account_id) if body.youtube_account_id else None,
+            str(resolved_youtube_account_id) if resolved_youtube_account_id else None,
+            body.privacy,
         )
         return {"publish_job_id": task.id, "platforms": body.platforms}
     except Exception as e:

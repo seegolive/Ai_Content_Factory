@@ -72,6 +72,41 @@ export function useClips(
   });
 }
 
+export function useClipStats() {
+  return useQuery({
+    queryKey: ["clipStats"],
+    queryFn: () => clipsApi.stats().then((r) => r.data),
+    staleTime: 15_000,
+  });
+}
+
+export function useClip(clipId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["clip", clipId],
+    queryFn: () => clipsApi.getById(clipId).then((r) => r.data),
+    enabled: !!clipId && enabled,
+    staleTime: 5_000,
+  });
+}
+
+/** Poll a clip's platform_status until it's published/failed. */
+export function useClipPublishStatus(clipId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["clipPublishStatus", clipId],
+    queryFn: () => clipsApi.getById(clipId).then((r) => r.data.platform_status),
+    enabled: !!clipId && enabled,
+    refetchInterval: (query) => {
+      const status = query.state.data;
+      if (!status) return 2_000;
+      const isTerminal = Object.values(status).every(
+        (s) => s.status === "published" || s.status === "failed" || s.status === "pending"
+      );
+      return isTerminal ? false : 2_000;
+    },
+    staleTime: 0,
+  });
+}
+
 export function useReviewClip() {
   const qc = useQueryClient();
   return useMutation({
@@ -109,11 +144,59 @@ export function useUpdateClip() {
       clipId: string;
       data: { title?: string; description?: string; hashtags?: string[] };
     }) => clipsApi.update(clipId, data).then((r) => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["clips"] }),
+    onSuccess: (_, { clipId }) => {
+      qc.invalidateQueries({ queryKey: ["clips"] });
+      qc.invalidateQueries({ queryKey: ["clip", clipId] });
+    },
+  });
+}
+
+export function useSavePublishSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      clipId,
+      settings,
+    }: {
+      clipId: string;
+      settings: {
+        title?: string;
+        description?: string;
+        hashtags?: string[];
+        privacy: "public" | "unlisted" | "private";
+        category?: string;
+      };
+    }) => clipsApi.savePublishSettings(clipId, settings).then((r) => r.data),
+    onSuccess: (_, { clipId }) => {
+      qc.invalidateQueries({ queryKey: ["clip", clipId] });
+      qc.invalidateQueries({ queryKey: ["clips"] });
+    },
   });
 }
 
 // ── YouTube ──────────────────────────────────────────────────────────────────
+
+export function usePublishClip() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      clipId,
+      platforms,
+      youtube_account_id,
+      privacy,
+    }: {
+      clipId: string;
+      platforms: string[];
+      youtube_account_id?: string;
+      privacy?: string;
+    }) => clipsApi.publish(clipId, platforms, youtube_account_id, privacy).then((r) => r.data),
+    onSuccess: (_, { clipId }) => {
+      qc.invalidateQueries({ queryKey: ["clips"] });
+      qc.invalidateQueries({ queryKey: ["clip", clipId] });
+      qc.invalidateQueries({ queryKey: ["clipPublishStatus", clipId] });
+    },
+  });
+}
 
 export function useYoutubeStats() {
   return useQuery({

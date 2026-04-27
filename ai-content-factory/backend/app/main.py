@@ -84,13 +84,14 @@ os.makedirs(settings.LOCAL_STORAGE_PATH, exist_ok=True)
 
 
 # Routers
-from app.api.routes import analytics, auth, clips, videos, youtube
+from app.api.routes import analytics, auth, clips, settings, videos, youtube
 
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(videos.router, prefix="/api/v1", tags=["videos"])
 app.include_router(clips.router, prefix="/api/v1", tags=["clips"])
 app.include_router(youtube.router, prefix="/api/v1", tags=["youtube"])
 app.include_router(analytics.router, prefix="/api/v1", tags=["analytics"])
+app.include_router(settings.router, prefix="/api/v1", tags=["settings"])
 
 
 @app.get("/health", tags=["system"])

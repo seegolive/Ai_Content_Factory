@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { RefreshCw, Youtube, Users, Eye, Clock, TrendingUp, CheckCircle } from "lucide-react";
+import { RefreshCw, Youtube, Users, Eye, Clock, TrendingUp, CheckCircle, ChevronDown } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { id } from "date-fns/locale";
 import { useYoutubeStats } from "@/lib/queries";
@@ -35,6 +35,13 @@ export default function AnalyticsPage() {
     ? formatDistanceToNow(new Date(overview.last_synced), { addSuffix: true, locale: id })
     : null;
 
+  // Detect stale data: total_views is 0 but we have recent views
+  const hasStaleData = !overviewLoading && (overview?.total_views ?? 0) === 0 && (overview?.views_last_30d ?? 0) > 0;
+
+  const connectedAccounts = accounts.filter((a) => a.connected);
+  const selectedAccount = connectedAccounts.find((a) => a.channel_id === selectedChannelId);
+  const channelName = overview?.channel_name ?? selectedAccount?.channel_name ?? "—";
+
   if (!ytStats) {
     return (
       <div className="page-scroll">
@@ -49,7 +56,7 @@ export default function AnalyticsPage() {
     );
   }
 
-  if (accounts.length === 0 || !accounts.some((a) => a.connected)) {
+  if (accounts.length === 0 || !connectedAccounts.length) {
     return (
       <div className="page-scroll">
         <div className="page-body">
@@ -70,78 +77,84 @@ export default function AnalyticsPage() {
     <div className="page-scroll">
       <div className="page-body analytics-page">
 
-        {/* ── Header ── */}
-        <div className="analytics-page-header">
-          <div className="analytics-header-left">
-            <h1 className="page-heading-title" style={{ margin: 0 }}>Analytics</h1>
-            {accounts.length > 1 ? (
-              <select
-                className="analytics-select"
-                value={selectedChannelId ?? ""}
-                onChange={(e) => setSelectedChannelId(e.target.value || null)}
-              >
-                {accounts
-                  .filter((a) => a.connected)
-                  .map((a) => (
-                    <option key={a.channel_id} value={a.channel_id}>
-                      {a.channel_name ?? a.channel_id}
-                    </option>
-                  ))}
-              </select>
-            ) : (
-              <span className="analytics-channel-name-label">
-                {accounts[0]?.channel_name ?? accounts[0]?.channel_id}
-              </span>
-            )}
+        {/* ── Header Bar ── */}
+        <div className="analytics-topbar">
+          {/* Left: Channel identity */}
+          <div className="analytics-topbar-left">
+            <div className="analytics-channel-avatar-wrap">
+              <Youtube size={18} />
+            </div>
+            <div className="analytics-topbar-identity">
+              {connectedAccounts.length > 1 ? (
+                <div className="analytics-channel-select-wrap">
+                  <select
+                    className="analytics-channel-select"
+                    value={selectedChannelId ?? ""}
+                    onChange={(e) => setSelectedChannelId(e.target.value || null)}
+                  >
+                    {connectedAccounts.map((a) => (
+                      <option key={a.channel_id} value={a.channel_id}>
+                        {a.channel_name ?? a.channel_id}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={13} className="analytics-channel-select-icon" />
+                </div>
+              ) : (
+                <span className="analytics-topbar-channel-name">{channelName}</span>
+              )}
+              <div className="analytics-topbar-meta">
+                {overviewLoading ? (
+                  <div className="skeleton" style={{ width: 180, height: 11, borderRadius: 3 }} />
+                ) : (
+                  <>
+                    <span>
+                      <Eye size={10} />
+                      {hasStaleData
+                        ? `${(overview!.views_last_30d).toLocaleString()} views (30d)`
+                        : `${(overview?.total_views ?? 0).toLocaleString()} total views`}
+                    </span>
+                    <span className="analytics-topbar-dot" />
+                    <span>
+                      <Users size={10} />
+                      {(overview?.total_videos ?? 0).toLocaleString()} video
+                    </span>
+                    {(overview?.content_dna_confidence ?? 0) > 0 && (
+                      <>
+                        <span className="analytics-topbar-dot" />
+                        <span style={{ color: "#00D4AA" }}>
+                          DNA {overview!.content_dna_confidence.toFixed(0)}%
+                        </span>
+                      </>
+                    )}
+                    {hasStaleData && (
+                      <>
+                        <span className="analytics-topbar-dot" />
+                        <span style={{ color: "#F0B429" }}>Sync untuk data lengkap</span>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="analytics-header-right">
-            {lastSynced && (
-              <span className="analytics-last-synced">
-                <CheckCircle size={12} style={{ color: "#00D4AA" }} />
-                Sync {lastSynced}
+
+          {/* Right: Sync status + action */}
+          <div className="analytics-topbar-right">
+            {lastSynced && !isSyncing && (
+              <span className="analytics-sync-status">
+                <CheckCircle size={11} />
+                {lastSynced}
               </span>
             )}
             <button
-              className="btn-secondary"
+              className="analytics-sync-btn"
               onClick={() => syncAnalytics(selectedChannelId!)}
               disabled={isSyncing || !selectedChannelId}
             >
-              <RefreshCw size={14} className={isSyncing ? "spin" : ""} />
-              {isSyncing ? "Syncing..." : "Sync Analytics"}
+              <RefreshCw size={13} className={isSyncing ? "spin" : ""} />
+              {isSyncing ? "Syncing..." : "Sync"}
             </button>
-          </div>
-        </div>
-
-        {/* ── Channel Profile Card ── */}
-        <div className="analytics-channel-card">
-          <div className="analytics-channel-avatar-wrap">
-            <Youtube size={24} />
-          </div>
-          <div className="analytics-channel-info">
-            <div className="analytics-channel-card-title">
-              {overviewLoading ? (
-                <div className="skeleton" style={{ width: 160, height: 18, borderRadius: 4 }} />
-              ) : (
-                <span>{overview?.channel_name ?? accounts.find((a) => a.channel_id === selectedChannelId)?.channel_name ?? "—"}</span>
-              )}
-            </div>
-            <div className="analytics-channel-card-meta">
-              {overviewLoading ? (
-                <div className="skeleton" style={{ width: 220, height: 14, borderRadius: 4 }} />
-              ) : (
-                <>
-                  <span><Eye size={11} /> {(overview?.total_views ?? 0).toLocaleString()} total views</span>
-                  <span>·</span>
-                  <span><Users size={11} /> {(overview?.total_videos ?? 0).toLocaleString()} video</span>
-                  {(overview?.content_dna_confidence ?? 0) > 0 && (
-                    <>
-                      <span>·</span>
-                      <span style={{ color: "#00D4AA" }}>DNA {overview!.content_dna_confidence.toFixed(0)}% confidence</span>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
           </div>
         </div>
 
@@ -165,16 +178,15 @@ export default function AnalyticsPage() {
           />
           <KPICard
             label="Watch Time"
-            value={overview?.watch_time_hours ?? 0}
-            unit=" jam"
+            value={hasStaleData ? "—" : (overview?.watch_time_hours ?? 0)}
+            unit={hasStaleData ? undefined : " jam"}
             icon={<Clock size={16} />}
             accentColor="teal"
             loading={overviewLoading}
           />
           <KPICard
             label="Avg CTR"
-            value={overview ? parseFloat((overview.avg_ctr * 100).toFixed(1)) : 0}
-            unit="%"
+            value={overview ? `${(overview.avg_ctr * 100).toFixed(1)}%` : "0%"}
             icon={<TrendingUp size={16} />}
             accentColor={
               (overview?.avg_ctr ?? 0) >= 0.06
@@ -187,7 +199,7 @@ export default function AnalyticsPage() {
           />
           <KPICard
             label="Subs Baru (30H)"
-            value={overview?.subscribers_last_30d ?? 0}
+            value={(overview?.subscribers_last_30d ?? 0) < 0 ? "—" : (overview?.subscribers_last_30d ?? 0)}
             icon={<Users size={16} />}
             accentColor="default"
             loading={overviewLoading}

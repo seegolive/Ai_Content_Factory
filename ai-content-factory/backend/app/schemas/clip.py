@@ -26,10 +26,11 @@ class ClipOut(BaseModel):
     format_generated: dict = {}
     format: str
     qc_status: str
-    qc_issues: list[str] = []
+    qc_issues: list = []
     review_status: str
     reviewed_at: Optional[datetime] = None
     platform_status: dict = {}
+    publish_settings: dict = {}
     ai_provider_used: Optional[str] = None
     created_at: datetime
 
@@ -52,6 +53,16 @@ class ClipUpdateRequest(BaseModel):
     hashtags: Optional[list[str]] = None
 
 
+class ClipPublishSettingsRequest(BaseModel):
+    """Save YouTube publish settings before queuing."""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    hashtags: Optional[list[str]] = None
+    privacy: Literal["public", "unlisted", "private"] = "unlisted"
+    category: Optional[str] = None  # YouTube category ID, e.g. "20" for Gaming
+
+
 class ClipPublishRequest(BaseModel):
     platforms: list[str] = Field(default=["youtube"])
     youtube_account_id: Optional[uuid.UUID] = None
+    privacy: Literal["public", "unlisted", "private"] = "unlisted"

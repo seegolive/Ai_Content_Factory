@@ -84,6 +84,7 @@ services:
     volumes:
       - ./backend:/app
       - ./storage:/app/storage
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://postgres:password@postgres:5432/ai_content_factory}
       - DATABASE_URL_SYNC=${DATABASE_URL_SYNC:-postgresql://postgres:password@postgres:5432/ai_content_factory}
@@ -100,6 +101,8 @@ services:
       - ACRCLOUD_ACCESS_SECRET=${ACRCLOUD_ACCESS_SECRET}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - PATH=/root/.deno/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/sbin:/bin
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q celery,pipeline,distribute,analytics
     depends_on:
       - postgres

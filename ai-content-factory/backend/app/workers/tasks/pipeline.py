@@ -53,11 +53,17 @@ def process_video_pipeline(self, video_id: str):
 
     async def _run():
         from sqlalchemy import select
-        from app.core.database import AsyncSessionLocal
+        from sqlalchemy.pool import NullPool
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from app.core.config import settings
         from app.models.user import User
         from app.models.video import Video
 
-        async with AsyncSessionLocal() as db:
+        # Use NullPool to avoid event-loop conflicts in Celery forked workers
+        _engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+        _SessionLocal = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with _SessionLocal() as db:
             result = await db.execute(select(Video).where(Video.id == uuid.UUID(video_id)))
             video = result.scalar_one_or_none()
             if not video:
@@ -70,6 +76,11 @@ def process_video_pipeline(self, video_id: str):
 
             current_idx = _checkpoint_index(video.checkpoint)
             logger.info(f"[Pipeline] Resuming from checkpoint: {video.checkpoint!r} (idx={current_idx})")
+
+            # Clear stale error from previous failed attempts
+            if video.error_message:
+                video.error_message = None
+                await db.commit()
 
             # Skip if already fully completed
             if video.checkpoint == "review_ready":
@@ -147,6 +158,8 @@ def process_video_pipeline(self, video_id: str):
                         user_email=user.email,
                     )
                 raise
+            finally:
+                await _engine.dispose()
 
     try:
         _run_async(_run())
@@ -191,18 +204,73 @@ async def _download_youtube_video(video, db):
     os.makedirs(storage_dir, exist_ok=True)
     output_path = os.path.join(storage_dir, f"{video.id}.%(ext)s")
 
+    # Use cookies file if available (needed to bypass YouTube bot detection in Docker)
+    cookies_path = os.path.join("storage", "youtube_cookies.txt")
+
+    # Map quality_preference to yt-dlp format string
+    quality = getattr(video, "quality_preference", "1440p") or "1440p"
+    quality_format_map = {
+        "1080p":  "bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
+        "1440p":  "bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
+        "2160p":  "bestvideo[height>=2160]+bestaudio/bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
+        "best":   "bestvideo+bestaudio/best",
+    }
+    fmt = quality_format_map.get(quality, quality_format_map["1440p"])
+
+    # Progress hook — writes download_progress (0-100) directly to DB via sync psycopg
+    video_id_str = str(video.id)
+
+    def _progress_hook(d):
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            downloaded = d.get("downloaded_bytes", 0)
+            if total and total > 0:
+                pct = int(downloaded * 100 / total)
+                # Use a sync raw SQL UPDATE to avoid async event loop issues in executor thread
+                try:
+                    import psycopg2
+                    from app.core.config import settings
+                    sync_url = settings.DATABASE_URL_SYNC
+                    conn = psycopg2.connect(sync_url)
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE videos SET download_progress = %s WHERE id = %s",
+                        (pct, video_id_str)
+                    )
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                except Exception:
+                    pass  # Non-critical — progress display only
+
+    # Use android_vr player client: provides 1080p/1440p/4K without JS challenge solving.
+    # The web/ios clients require EJS challenge solver or PO Token (often unavailable in Docker).
+    # android_vr bypasses both requirements and reliably returns high-quality formats.
     ydl_opts = {
-        "format": "bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best",
+        "format": fmt,
         "outtmpl": output_path,
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+        "no_warnings": False,
         "merge_output_format": "mp4",
-        "noprogress": True,
+        "noprogress": False,
+        "nopart": True,
+        "overwrites": True,
+        "extractor_args": {"youtube": {"player_client": ["android_vr", "android", "web"]}},
+        "progress_hooks": [_progress_hook],
         "postprocessors": [{
             "key": "FFmpegVideoConvertor",
             "preferedformat": "mp4",
         }],
     }
+
+    if os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
+        logger.info(f"[Pipeline] Using cookies from {cookies_path}")
+    else:
+        logger.warning(
+            "[Pipeline] No cookies file found at storage/youtube_cookies.txt — "
+            "YouTube may block download. Export cookies from browser and save there."
+        )
 
     loop = asyncio.get_event_loop()
 
@@ -212,6 +280,16 @@ async def _download_youtube_video(video, db):
             return info
 
     info = await loop.run_in_executor(None, _do_download)
+
+    # Warn if resolution below 1080p (Deno not working or source quality low)
+    downloaded_height = info.get("height", 0) if info else 0
+    if downloaded_height and downloaded_height < 1080:
+        logger.warning(
+            f"[Pipeline] ⚠️ Downloaded at {downloaded_height}p (below 1080p minimum). "
+            "Check Deno is on PATH or video source quality is low."
+        )
+    else:
+        logger.info(f"[Pipeline] ✅ Download quality: {downloaded_height}p")
 
     # Locate the downloaded file
     downloaded_path = os.path.join(storage_dir, f"{video.id}.mp4")
@@ -229,6 +307,7 @@ async def _download_youtube_video(video, db):
     file_size_bytes = os.path.getsize(downloaded_path)
     video.file_path = downloaded_path
     video.file_size_mb = file_size_bytes / (1024 * 1024)
+    video.download_progress = 100
     if info.get("title"):
         video.title = info["title"]
     if info.get("duration"):
@@ -268,7 +347,7 @@ async def _stage_transcription(video, db):
 
 
 async def _stage_ai_analysis(video, db):
-    from app.services.ai_brain import AIBrainService
+    from app.services.ai_brain import AIBrainService, MOMENT_DURATION_RULES, FALLBACK_DURATION_RULE
     from app.services.transcription import TranscriptResult, TranscriptSegment
 
     if not video.transcript:
@@ -296,10 +375,20 @@ async def _stage_ai_analysis(video, db):
     brain = AIBrainService()
     analysis = await brain.analyze_transcript(transcript)
 
-    # Store clip suggestions in DB
+    # Validate and filter clips by duration rules
+    valid_clips, rejected_clips = _validate_clip_durations(
+        analysis.clips, video.duration_seconds or 0
+    )
+    if rejected_clips:
+        logger.warning(
+            f"[Pipeline] {len(rejected_clips)} clips rejected by duration validation: "
+            + ", ".join(f"{c.moment_type}({c.end_time - c.start_time:.0f}s)" for c in rejected_clips)
+        )
+
+    # Store valid clip suggestions in DB
     from app.models.clip import Clip
 
-    for suggestion in analysis.clips:
+    for suggestion in valid_clips:
         clip = Clip(
             video_id=video.id,
             user_id=video.user_id,
@@ -320,8 +409,78 @@ async def _stage_ai_analysis(video, db):
 
     video.checkpoint = "ai_done"
     video.ai_provider_used = analysis.provider_used
-    logger.info(f"AI analysis done via {analysis.provider_used} ({len(analysis.clips)} clips, {analysis.tokens_used} tokens)")
+    logger.info(
+        f"AI analysis done via {analysis.provider_used} "
+        f"({len(valid_clips)} valid clips, {len(rejected_clips)} rejected, "
+        f"{analysis.tokens_used} tokens)"
+    )
     await db.commit()
+
+
+def _validate_clip_durations(clips, video_duration: float):
+    """
+    Validate each clip's duration against MOMENT_DURATION_RULES.
+    Returns (valid_clips, rejected_clips).
+    Attempts to extend short clips before rejecting.
+    """
+    from app.services.ai_brain import MOMENT_DURATION_RULES, FALLBACK_DURATION_RULE
+
+    valid = []
+    rejected = []
+
+    for clip in clips:
+        rule = MOMENT_DURATION_RULES.get(clip.moment_type, FALLBACK_DURATION_RULE)
+        duration = clip.end_time - clip.start_time
+
+        if duration < rule["min"]:
+            # Try to extend the clip
+            extended = _try_extend_clip(clip, rule, video_duration)
+            ext_duration = extended.end_time - extended.start_time
+            if ext_duration >= rule["min"]:
+                logger.info(
+                    f"[Validate] Extended {clip.moment_type} clip "
+                    f"{duration:.0f}s → {ext_duration:.0f}s"
+                )
+                valid.append(extended)
+            else:
+                rejected.append(clip)
+        elif duration > rule["max"]:
+            # Trim from end (preserve buildup + action, trim resolution tail)
+            from copy import copy
+            trimmed = copy(clip)
+            trimmed.end_time = clip.start_time + rule["max"]
+            valid.append(trimmed)
+        else:
+            valid.append(clip)
+
+    return valid, rejected
+
+
+def _try_extend_clip(clip, rule: dict, video_duration: float):
+    """
+    Try to extend a clip to meet minimum duration by pulling start earlier
+    (adding buildup context) and/or extending end (adding resolution).
+    Returns modified clip copy.
+    """
+    from copy import copy
+    extended = copy(clip)
+    duration = extended.end_time - extended.start_time
+    deficit = rule["min"] - duration
+
+    # First: extend start backwards to add build-up
+    buildup_add = min(rule.get("buildup", 8), deficit)
+    new_start = max(0.0, extended.start_time - buildup_add)
+    extended.start_time = new_start
+    duration = extended.end_time - extended.start_time
+
+    # Second: extend end forwards to add resolution
+    if duration < rule["min"]:
+        still_short = rule["min"] - duration
+        resolution_add = min(rule.get("resolution", 8), still_short)
+        new_end = min(video_duration, extended.end_time + resolution_add)
+        extended.end_time = new_end
+
+    return extended
 
 
 async def _stage_qc_filtering(video, db):
@@ -333,7 +492,10 @@ async def _stage_qc_filtering(video, db):
 async def _stage_video_processing(video, db):
     from sqlalchemy import select
     from app.models.clip import Clip
+    from app.models.channel_config import ChannelCropConfig, GameCropProfile
     from app.services.video_processor import VideoProcessorService
+    from app.services.game_detector import GameDetector
+    from app.services.facecam_detector import FacecamDetector
 
     result = await db.execute(select(Clip).where(Clip.video_id == video.id))
     clips = result.scalars().all()
@@ -341,6 +503,59 @@ async def _stage_video_processing(video, db):
     processor = VideoProcessorService()
     clips_dir = os.path.join("storage", "clips", str(video.id))
     os.makedirs(clips_dir, exist_ok=True)
+
+    # ── Load crop config for this channel ──────────────────────────────
+    channel_config = None
+    default_game_profile = None
+
+    if video.youtube_account_id:
+        # Load channel config
+        cfg_result = await db.execute(
+            select(ChannelCropConfig).where(
+                ChannelCropConfig.youtube_account_id == video.youtube_account_id
+            )
+        )
+        channel_config = cfg_result.scalars().first()
+
+        if not channel_config:
+            # Auto-detect and create config
+            detector = FacecamDetector()
+            region = detector.detect_facecam_region(video.file_path) if video.file_path else None
+            if region:
+                suggested = detector.suggest_crop_config(region)
+                from app.models.channel_config import seed_default_game_profiles
+                channel_config = ChannelCropConfig(
+                    youtube_account_id=video.youtube_account_id,
+                    channel_id=str(video.youtube_account_id),  # fallback key
+                    default_vertical_crop_mode=suggested["vertical_crop_mode"],
+                    default_facecam_position=suggested["facecam_position"],
+                    default_crop_x_offset=suggested.get("crop_x_offset", 0),
+                    default_crop_anchor=suggested.get("crop_anchor", "left"),
+                )
+                db.add(channel_config)
+                await db.flush()
+                for p in seed_default_game_profiles(channel_config):
+                    db.add(p)
+                logger.info(f"[Pipeline] Auto-created crop config: {suggested['vertical_crop_mode']}")
+            else:
+                # Use in-memory default (blur_pillarbox)
+                channel_config = ChannelCropConfig(
+                    youtube_account_id=video.youtube_account_id,
+                    channel_id=str(video.youtube_account_id),
+                )
+
+    # ── Detect game and resolve game profile ───────────────────────────
+    game_detector = GameDetector()
+    game_name = game_detector.detect_from_title(video.title or "")
+    if game_name == "_default" and video.transcript:
+        game_name = game_detector.detect_from_transcript(video.transcript)
+
+    logger.info(f"[Pipeline] Detected game: {game_name}")
+
+    if channel_config and channel_config.id:
+        default_game_profile = await game_detector.get_game_profile(
+            game_name, channel_config.channel_id, db
+        )
 
     for clip in clips:
         try:
@@ -354,13 +569,39 @@ async def _stage_video_processing(video, db):
                 end_time=clip.end_time,
             )
 
-            # QC check
+            # Generate vertical 9:16 version using smart crop
+            vertical_path = os.path.join(clips_dir, f"{clip.id}_vertical.mp4")
+            try:
+                await processor.resize_to_vertical_smart(
+                    input_path=clip_path,
+                    output_path=vertical_path,
+                    game_profile=default_game_profile,
+                    channel_config=channel_config,
+                )
+                clip.clip_path_vertical = vertical_path
+                logger.info(f"[Pipeline] Vertical crop done for clip {clip.id}")
+            except Exception as crop_err:
+                logger.warning(f"[Pipeline] Vertical crop failed for clip {clip.id}: {crop_err}")
+
+            # QC check — pass moment_type for duration-aware validation
             qc_result = await processor.run_qc_check(clip_path)
+            # Also run moment-type duration check via qc_service
+            from app.services.qc_service import run_qc as run_moment_qc
+            duration_qc = await run_moment_qc(
+                clip_path,
+                moment_type=clip.moment_type,
+                clip_duration=clip.end_time - clip.start_time,
+            )
+            # Merge issues from both checks
+            combined_issues = qc_result.issues + [
+                i for i in duration_qc.issues if i.type not in {qi.type for qi in qc_result.issues}
+            ]
+            passed = qc_result.passed and duration_qc.passed
             clip.clip_path = clip_path
-            clip.qc_status = "passed" if qc_result.passed else "failed"
+            clip.qc_status = "passed" if passed else "failed"
             clip.qc_issues = [
                 {"type": i.type, "description": i.description, "severity": i.severity}
-                for i in qc_result.issues
+                for i in combined_issues
             ]
 
         except Exception as e:

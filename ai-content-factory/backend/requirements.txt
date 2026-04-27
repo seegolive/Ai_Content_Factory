@@ -34,7 +34,7 @@ google-api-python-client==2.154.0
 
 # Video Processing (ffmpeg-python is optional; we call ffmpeg via subprocess)
 ffmpeg-python==0.2.0
-yt-dlp==2024.11.4
+yt-dlp>=2026.3.17
 
 # Notification
 python-telegram-bot==21.9
@@ -50,6 +50,9 @@ tenacity==9.0.0
 scipy==1.14.1
 numpy==2.1.3
 pandas==2.2.3
+
+# Computer Vision (thumbnail sharpness + facecam auto-detect)
+opencv-python-headless>=4.8.0
 
 # Storage (future S3/R2)
 boto3==1.35.0

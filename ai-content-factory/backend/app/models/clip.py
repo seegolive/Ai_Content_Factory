@@ -58,6 +58,8 @@ class Clip(Base):
     )
     reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     platform_status: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    # YouTube publish settings: {title, description, hashtags, privacy, category}
+    publish_settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False, server_default="{}")
     speaker_id: Mapped[str] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

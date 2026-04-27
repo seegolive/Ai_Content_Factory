@@ -1,5 +1,8 @@
 "use client";
-import { FileText, TrendingUp, AlertCircle, Lightbulb, CheckCircle, Bell, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  TrendingUp, AlertCircle, Lightbulb, CheckCircle,
+  Bell, ChevronDown, ChevronUp, Clock, Zap, FileDown,
+} from "lucide-react";
 import { useState } from "react";
 import { useWeeklyReport } from "@/hooks/useAnalytics";
 import { format, parseISO, addDays, startOfWeek } from "date-fns";
@@ -10,37 +13,42 @@ interface Props {
   channelId: string | null;
 }
 
+/* ── Simple bullet section (wins / issues) ── */
 function Section({
   icon,
   title,
   items,
-  color,
+  accentColor,
+  accentBg,
 }: {
   icon: React.ReactNode;
   title: string;
   items: string[];
-  color: string;
+  accentColor: string;
+  accentBg: string;
 }) {
   const [open, setOpen] = useState(true);
   if (!items?.length) return null;
   return (
-    <div className="weekly-section">
-      <button className="weekly-section-header" onClick={() => setOpen((o) => !o)}>
-        <span style={{ color }}>{icon}</span>
-        <span className="weekly-section-title" style={{ color }}>
-          {title}
+    <div className="wrep-section">
+      <button className="wrep-section-hd" onClick={() => setOpen((o) => !o)}>
+        <span className="wrep-section-icon" style={{ color: accentColor, background: accentBg }}>
+          {icon}
         </span>
-        <span className="weekly-section-count">{items.length}</span>
-        <span className="weekly-section-chevron">
-          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <span className="wrep-section-title" style={{ color: accentColor }}>{title}</span>
+        <span className="wrep-section-pill" style={{ background: accentBg, color: accentColor }}>
+          {items.length}
+        </span>
+        <span className="wrep-chevron">
+          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         </span>
       </button>
       {open && (
-        <ul className="weekly-section-items">
+        <ul className="wrep-bullet-list">
           {items.map((item, i) => (
-            <li key={i} className="weekly-item">
-              <span className="weekly-item-bullet" style={{ background: color }} />
-              {item}
+            <li key={i} className="wrep-bullet-item">
+              <span className="wrep-dot" style={{ background: accentColor }} />
+              <span>{item}</span>
             </li>
           ))}
         </ul>
@@ -49,46 +57,57 @@ function Section({
   );
 }
 
+/* ── Action-card recommendations section ── */
 function RecsSection({ recs }: { recs: NonNullable<ReportType["recommendations"]> }) {
   const [open, setOpen] = useState(true);
   if (!recs?.length) return null;
-  const priorityColor: Record<string, string> = {
-    high: "#FF6B6B",
-    medium: "#F0B429",
-    low: "#6B6B8A",
+
+  const priority: Record<string, { label: string; color: string; bg: string }> = {
+    high:   { label: "HIGH",  color: "#FF6B6B", bg: "rgba(255,107,107,0.12)" },
+    medium: { label: "MED",   color: "#F0B429", bg: "rgba(240,180,41,0.12)"  },
+    low:    { label: "LOW",   color: "#8B85FF", bg: "rgba(139,133,255,0.12)" },
   };
+
   return (
-    <div className="weekly-section">
-      <button className="weekly-section-header" onClick={() => setOpen((o) => !o)}>
-        <span style={{ color: "#6C63FF" }}><Lightbulb size={14} /></span>
-        <span className="weekly-section-title" style={{ color: "#6C63FF" }}>
-          Rekomendasi Aksi
+    <div className="wrep-section">
+      <button className="wrep-section-hd" onClick={() => setOpen((o) => !o)}>
+        <span className="wrep-section-icon" style={{ color: "#8B85FF", background: "rgba(139,133,255,0.12)" }}>
+          <Lightbulb size={13} />
         </span>
-        <span className="weekly-section-count">{recs.length}</span>
-        <span className="weekly-section-chevron">
-          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <span className="wrep-section-title" style={{ color: "#8B85FF" }}>Rekomendasi Aksi</span>
+        <span className="wrep-section-pill" style={{ background: "rgba(139,133,255,0.12)", color: "#8B85FF" }}>
+          {recs.length}
+        </span>
+        <span className="wrep-chevron">
+          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         </span>
       </button>
       {open && (
-        <ul className="weekly-section-items">
-          {recs.map((rec, i) => (
-            <li key={i} className="weekly-item weekly-rec-item">
-              <span
-                className="weekly-item-bullet"
-                style={{ background: priorityColor[rec.priority] ?? "#6C63FF" }}
-              />
-              <div>
-                <div style={{ fontWeight: 600, color: "#E8E8F0" }}>{rec.action}</div>
-                <div className="muted" style={{ fontSize: 12 }}>
-                  {rec.reason}
+        <div className="wrep-recs-list">
+          {recs.map((rec, i) => {
+            const p = priority[rec.priority] ?? priority.medium;
+            return (
+              <div key={i} className="wrep-rec-card">
+                <span className="wrep-rec-num">{String(i + 1).padStart(2, "0")}</span>
+                <div className="wrep-rec-body">
+                  <div className="wrep-rec-header">
+                    <span className="wrep-priority-chip" style={{ color: p.color, background: p.bg }}>
+                      {p.label}
+                    </span>
+                    <span className="wrep-rec-action">{rec.action}</span>
+                  </div>
+                  {rec.reason && <p className="wrep-rec-reason">{rec.reason}</p>}
                   {rec.expected_impact && (
-                    <> · <span style={{ color: "#00D4AA" }}>{rec.expected_impact}</span></>
+                    <span className="wrep-rec-impact">
+                      <TrendingUp size={10} />
+                      {rec.expected_impact}
+                    </span>
                   )}
                 </div>
               </div>
-            </li>
-          ))}
-        </ul>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -104,27 +123,32 @@ export function WeeklyInsightReport({ channelId }: Props) {
 
   if (isLoading) {
     return (
-      <div className="panel">
-        {[...Array(3)].map((_, i) => (
-          <div key={i} className="skeleton" style={{ height: 56, borderRadius: 6, marginBottom: 8 }} />
-        ))}
+      <div className="wrep-panel">
+        <div className="wrep-header-band">
+          <div className="skeleton" style={{ width: 80, height: 14, borderRadius: 4 }} />
+          <div className="skeleton" style={{ width: 200, height: 22, borderRadius: 4, marginTop: 6 }} />
+        </div>
+        <div style={{ padding: "16px 24px", display: "flex", flexDirection: "column", gap: 10 }}>
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="skeleton" style={{ height: 48, borderRadius: 8 }} />
+          ))}
+        </div>
       </div>
     );
   }
 
   if (!report || !report.available) {
     return (
-      <div className="panel analytics-chart-panel">
-        <div className="analytics-chart-header">
-          <h3 className="analytics-section-title">
-            <FileText size={16} /> Laporan Mingguan AI
-          </h3>
+      <div className="wrep-panel">
+        <div className="wrep-header-band">
+          <span className="wrep-ai-label"><Zap size={10} /> AI REPORT</span>
+          <h3 className="wrep-title">Laporan Mingguan</h3>
         </div>
-        <div className="analytics-retention-empty">
-          <FileText size={32} strokeWidth={1.5} />
+        <div className="analytics-retention-empty" style={{ padding: "40px 24px" }}>
+          <Clock size={32} strokeWidth={1.5} />
           <p>Laporan pertama akan dibuat hari Senin</p>
-          <p className="muted">
-            {report?.message ?? "AI akan menganalisis performa channel minggu ini dan memberikan rekomendasi aksi."}
+          <p className="muted" style={{ fontSize: 12 }}>
+            {report?.message ?? "AI akan menganalisis performa channel dan memberikan rekomendasi aksi."}
           </p>
         </div>
       </div>
@@ -137,87 +161,107 @@ export function WeeklyInsightReport({ channelId }: Props) {
       format(parseISO(report.week_end), "d MMM yyyy", { locale: id })
     : "";
 
-  const viewsChange = report.views_change_pct;
-  const subsChange = report.subscribers_change;
+  const viewsChange    = report.views_change_pct;
+  const subsChange     = report.subscribers_change;
+  const showStats      = viewsChange != null || (subsChange != null && subsChange !== -1);
+  const hasTopClipType = report.top_clip_type &&
+    !report.top_clip_type.toLowerCase().startsWith("tidak ada") &&
+    report.top_clip_type.length <= 40;
 
   return (
-    <div className="panel analytics-chart-panel weekly-report-panel">
-      <div className="analytics-chart-header">
-        <div>
-          <h3 className="analytics-section-title">
-            <FileText size={16} /> Laporan Mingguan AI
-          </h3>
-          {weekLabel && <p className="muted" style={{ fontSize: 12, marginTop: 2 }}>{weekLabel}</p>}
+    <div className="wrep-panel">
+      {/* ── Header Band ── */}
+      <div className="wrep-header-band">
+        <div className="wrep-header-row">
+          <div className="wrep-header-left">
+            <span className="wrep-ai-label"><Zap size={10} /> AI REPORT</span>
+            <h3 className="wrep-title">Laporan Mingguan</h3>
+            {weekLabel && <span className="wrep-date-label">{weekLabel}</span>}
+          </div>
+          <span className="wrep-badge-done">
+            <CheckCircle size={11} /> Selesai
+          </span>
         </div>
-        <span className="status-badge generated">Selesai</span>
+
+        {/* Executive Summary */}
+        {report.summary && (
+          <div className="wrep-summary-block">
+            <span className="wrep-summary-accent" />
+            <p className="wrep-summary-text">
+              <span className="wrep-summary-bold">TL;DR</span>{" "}
+              {report.summary}
+            </p>
+          </div>
+        )}
       </div>
 
-      {/* TL;DR / Summary */}
-      {report.summary && (
-        <div className="weekly-tldr">
-          <strong>TL;DR:</strong> {report.summary}
+      {/* ── Metrics Strip ── */}
+      {showStats && (
+        <div className="wrep-metrics-strip">
+          {viewsChange != null && (
+            <div className="wrep-metric">
+              <span
+                className="wrep-metric-val"
+                style={{ color: viewsChange >= 0 ? "#00D4AA" : "#FF6B6B" }}
+              >
+                {viewsChange >= 0 ? "+" : ""}{viewsChange.toFixed(1)}%
+              </span>
+              <span className="wrep-metric-lbl">Views vs minggu lalu</span>
+            </div>
+          )}
+          {subsChange != null && subsChange !== -1 && (
+            <div className="wrep-metric">
+              <span
+                className="wrep-metric-val"
+                style={{ color: subsChange >= 0 ? "#00D4AA" : "#FF6B6B" }}
+              >
+                {subsChange >= 0 ? "+" : ""}{subsChange}
+              </span>
+              <span className="wrep-metric-lbl">Subscribers</span>
+            </div>
+          )}
+          {hasTopClipType && (
+            <div className="wrep-metric">
+              <span className="wrep-metric-val" style={{ fontSize: 14 }}>
+                {report.top_clip_type}
+              </span>
+              <span className="wrep-metric-lbl">Top clip type</span>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Quick stats row */}
-      <div className="weekly-stats-row">
-        {viewsChange != null && (
-          <div className="weekly-stat">
-            <span
-              className="weekly-stat-value"
-              style={{ color: viewsChange >= 0 ? "#00D4AA" : "#FF6B6B" }}
-            >
-              {viewsChange >= 0 ? "+" : ""}{viewsChange.toFixed(1)}%
-            </span>
-            <span className="weekly-stat-label">Views vs minggu lalu</span>
-          </div>
-        )}
-        {subsChange != null && (
-          <div className="weekly-stat">
-            <span
-              className="weekly-stat-value"
-              style={{ color: subsChange >= 0 ? "#00D4AA" : "#FF6B6B" }}
-            >
-              {subsChange >= 0 ? "+" : ""}{subsChange}
-            </span>
-            <span className="weekly-stat-label">Subscribers</span>
-          </div>
-        )}
-        {report.top_clip_type && (
-          <div className="weekly-stat">
-            <span className="weekly-stat-value">{report.top_clip_type}</span>
-            <span className="weekly-stat-label">Top clip type</span>
-          </div>
-        )}
+      {/* ── Content Sections ── */}
+      <div className="wrep-sections">
+        <Section
+          icon={<TrendingUp size={13} />}
+          title="Wins Minggu Ini"
+          items={report.wins ?? []}
+          accentColor="#00D4AA"
+          accentBg="rgba(0,212,170,0.1)"
+        />
+        <Section
+          icon={<AlertCircle size={13} />}
+          title="Perlu Perhatian"
+          items={report.issues ?? []}
+          accentColor="#FF6B6B"
+          accentBg="rgba(255,107,107,0.1)"
+        />
+        <RecsSection recs={report.recommendations ?? []} />
       </div>
 
-      <Section
-        icon={<TrendingUp size={14} />}
-        title="Wins Minggu Ini"
-        items={report.wins ?? []}
-        color="#00D4AA"
-      />
-      <Section
-        icon={<AlertCircle size={14} />}
-        title="Perlu Perhatian"
-        items={report.issues ?? []}
-        color="#FF6B6B"
-      />
-      <RecsSection recs={report.recommendations ?? []} />
-
-      {/* Footer */}
-      <div className="weekly-footer">
-        <div className="weekly-next-report">
-          <CheckCircle size={12} />
-          Laporan berikutnya:{" "}
-          <strong>{nextMondayLabel()}</strong>
+      {/* ── Footer ── */}
+      <div className="wrep-footer">
+        <div className="wrep-next-label">
+          <Clock size={11} />
+          <span>Laporan berikutnya: <strong>{nextMondayLabel()}</strong></span>
         </div>
-        <div className="weekly-actions">
-          <button className="btn-ghost-sm">
+        <div className="wrep-footer-btns">
+          <button className="wrep-btn">
             <Bell size={12} /> Kirim ke Telegram
           </button>
-          <button className="btn-ghost-sm">
-            Export PDF
+          <button className="wrep-btn wrep-btn-accent">
+            <FileDown size={12} /> Export PDF
           </button>
         </div>
       </div>

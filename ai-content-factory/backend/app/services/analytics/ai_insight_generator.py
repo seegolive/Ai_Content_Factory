@@ -25,6 +25,9 @@ ATURAN OUTPUT:
 - Tone: Seperti konsultan yang supportive, jujur, dan to-the-point
 - Hindari jargon teknis yang tidak perlu
 - Setiap rekomendasi harus spesifik dan actionable (bukan "optimalkan konten")
+- PENTING: Jika `is_new_channel` = true atau `total_videos` = 0, jangan analisis
+  seolah channel lama yang drop. Berikan laporan "channel baru" yang encouraging.
+  Fokus pada langkah-langkah setup dan ekspektasi awal yang realistis.
 - Output HANYA JSON, tidak ada teks di luar JSON
 
 JSON Schema yang harus diikuti PERSIS:
@@ -149,10 +152,14 @@ class AIInsightGenerator:
         prev_week_stats: dict[str, Any],
         top_videos: list[dict],
         unclipped_count: int,
+        total_videos: int = 0,
+        is_new_channel: bool = False,
     ) -> dict[str, Any]:
         """Generate AI weekly report in Bahasa Indonesia."""
         user_msg = f"""
 Channel: {channel_name}
+Total video dengan analytics: {total_videos}
+Channel baru (belum banyak data): {is_new_channel}
 
 Statistik minggu ini:
 {json.dumps(week_stats, indent=2, ensure_ascii=False)}

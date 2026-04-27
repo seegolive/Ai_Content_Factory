@@ -1,9 +1,10 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { Play, Eye, Trash2, Clock, Layers } from "lucide-react";
+import { Play, Eye, Trash2, Clock, Layers, Download } from "lucide-react";
 import { formatDuration, formatRelativeTime } from "@/lib/utils";
 import { useDeleteVideo } from "@/lib/queries";
 import { toast } from "sonner";
+import Image from "next/image";
 import type { Video } from "@/types";
 
 const STATUS_MAP: Record<string, { dot: string; label: string; bg: string }> = {
@@ -34,6 +35,11 @@ export function VideoCard({ video }: VideoCardProps) {
     }
   };
 
+  const isDownloading = video.status === "processing"
+    && !video.checkpoint
+    && typeof video.download_progress === "number"
+    && video.download_progress < 100;
+
   return (
     <div
       className="video-card"
@@ -49,7 +55,18 @@ export function VideoCard({ video }: VideoCardProps) {
     >
       {/* Thumbnail */}
       <div className="video-card-thumb">
-        <Play size={18} color="var(--text-4)" />
+        {video.thumbnail_url ? (
+          <Image
+            src={video.thumbnail_url}
+            alt={video.title ?? "Video thumbnail"}
+            fill
+            sizes="240px"
+            style={{ objectFit: "cover" }}
+            unoptimized
+          />
+        ) : (
+          <Play size={18} color="var(--text-4)" />
+        )}
         <div
           className="status-pill"
           role="status"
@@ -62,7 +79,37 @@ export function VideoCard({ video }: VideoCardProps) {
           <div className="status-dot" style={{ background: s.dot }} />
           <span style={{ color: s.dot }}>{s.label}</span>
         </div>
+        {video.quality_preference && (
+          <span style={{
+            position: "absolute", bottom: 8, left: 8,
+            background: "rgba(0,0,0,0.65)", borderRadius: 4,
+            fontSize: 9, fontFamily: "var(--font-mono)", padding: "2px 5px",
+            color: "var(--text-2)",
+          }}>
+            {video.quality_preference}
+          </span>
+        )}
       </div>
+
+      {/* Download progress bar (visible while downloading) */}
+      {isDownloading && (
+        <div style={{ padding: "6px 12px 0", background: "var(--surface-2)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+            <Download size={10} color="var(--primary-text)" className="spin-slow" />
+            <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+              Downloading… {video.download_progress}%
+            </span>
+          </div>
+          <div style={{ height: 3, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{
+              height: "100%", background: "var(--primary)",
+              width: `${video.download_progress}%`,
+              transition: "width 0.4s ease",
+              borderRadius: 2,
+            }} />
+          </div>
+        </div>
+      )}
 
       {/* Body */}
       <div className="video-card-body">
@@ -109,3 +156,5 @@ export function VideoCard({ video }: VideoCardProps) {
     </div>
   );
 }
+
+

@@ -4,6 +4,7 @@ import type {
   User,
   Video,
   VideoDetail,
+  VideoPreviewResponse,
 } from "@/types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -73,11 +74,15 @@ export const videosApi = {
     );
   },
 
-  fromUrl: (youtube_url: string, youtube_account_id?: string) =>
+  fromUrl: (youtube_url: string, youtube_account_id?: string, quality_preference?: string) =>
     api.post<{ video_id: string; status: string; message: string }>("/videos/from-url", {
       youtube_url,
       youtube_account_id,
+      quality_preference: quality_preference ?? "1440p",
     }),
+
+  preview: (url: string) =>
+    api.get<VideoPreviewResponse>("/videos/preview", { params: { url } }),
 
   getById: (id: string) => api.get<VideoDetail>(`/videos/${id}`),
 
@@ -102,6 +107,8 @@ export const clipsApi = {
     params?: { qc_status?: string; review_status?: string; viral_score_min?: number }
   ) => api.get<Clip[]>(`/videos/${videoId}/clips`, { params }),
 
+  getById: (clipId: string) => api.get<Clip>(`/clips/${clipId}`),
+
   review: (clipId: string, action: "approve" | "reject", note?: string) =>
     api.patch<Clip>(`/clips/${clipId}/review`, { action, note }),
 
@@ -111,8 +118,16 @@ export const clipsApi = {
   update: (clipId: string, data: { title?: string; description?: string; hashtags?: string[] }) =>
     api.patch<Clip>(`/clips/${clipId}`, data),
 
-  publish: (clipId: string, platforms: string[], youtube_account_id?: string) =>
-    api.post(`/clips/${clipId}/publish`, { platforms, youtube_account_id }),
+  savePublishSettings: (clipId: string, settings: {
+    title?: string;
+    description?: string;
+    hashtags?: string[];
+    privacy: "public" | "unlisted" | "private";
+    category?: string;
+  }) => api.patch<Clip>(`/clips/${clipId}/publish-settings`, settings),
+
+  publish: (clipId: string, platforms: string[], youtube_account_id?: string, privacy?: string) =>
+    api.post(`/clips/${clipId}/publish`, { platforms, youtube_account_id, privacy: privacy ?? "unlisted" }),
 
   /** Fetch a short-lived (1h) signed token for streaming a clip file.
    *  Use the returned token as ?token= in streamUrl(). */
@@ -124,6 +139,9 @@ export const clipsApi = {
    *  can authenticate without sending an Authorization header. */
   streamUrl: (clipId: string, token: string) =>
     `${BASE_URL}/api/v1/clips/${clipId}/stream?token=${encodeURIComponent(token)}`,
+
+  stats: () =>
+    api.get<{ total: number; pending: number; approved: number; rejected: number; published: number }>("/clips/stats"),
 };
 
 // ── YouTube ──────────────────────────────────────────────────────────────────

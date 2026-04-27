@@ -2,8 +2,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import Link from "next/link";
 import {
   User, Youtube, Shield, LogOut, CheckCircle, AlertTriangle, ExternalLink, RefreshCw,
+  Crop, ChevronRight,
 } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { useYoutubeStats } from "@/lib/queries";
@@ -218,8 +220,42 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Account Section */}
+          {/* Vertical Crop Config */}
           <div className="settings-section anim-2">
+            <div className="settings-section-hd">
+              <div className="settings-section-icon" style={{ background: "rgba(34,197,94,0.12)" }}>
+                <Crop size={13} color="#22c55e" />
+              </div>
+              <span className="settings-section-title">Vertical Crop</span>
+            </div>
+            <div className="settings-section-body">
+              <p style={{ fontSize: 13, color: "var(--text-3)", marginBottom: 14, lineHeight: 1.6 }}>
+                Configure how your clips are cropped for vertical (9:16) format. Supports blur pillarbox, smart offset, and dual-zone (gameplay + facecam) modes with per-game overrides.
+              </p>
+              <Link
+                href="/settings/crop-config"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 7,
+                  padding: "0 16px", height: 36,
+                  borderRadius: "var(--r-md)",
+                  background: "rgba(34,197,94,0.12)",
+                  color: "#22c55e",
+                  border: "1px solid rgba(34,197,94,0.2)",
+                  fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  fontFamily: "var(--font-sans)",
+                  textDecoration: "none",
+                  transition: "all 130ms ease",
+                }}
+              >
+                <Crop size={13} />
+                Open Crop Config
+                <ChevronRight size={12} style={{ marginLeft: 2 }} />
+              </Link>
+            </div>
+          </div>
+
+          {/* Account Section */}
+          <div className="settings-section anim-3">
             <div className="settings-section-hd">
               <div className="settings-section-icon" style={{ background: "var(--danger-dim)" }}>
                 <Shield size={13} color="var(--danger)" />

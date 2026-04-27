@@ -57,20 +57,18 @@ async def get_channel_overview(
     thirty_days_ago = date.today() - timedelta(days=30)
     sixty_days_ago = date.today() - timedelta(days=60)
 
-    # Totals
+    # Totals — query video_analytics by channel_id directly (video_id may be NULL for YouTube-only videos)
     total_result = await db.execute(
         text(
             """
             SELECT
                 COALESCE(SUM(va.views), 0) AS total_views,
-                COUNT(DISTINCT va.video_id) AS total_videos_with_data,
+                COUNT(DISTINCT va.youtube_video_id) AS total_videos_with_data,
                 COALESCE(AVG(va.impression_ctr), 0) AS avg_ctr,
                 COALESCE(AVG(va.avg_view_duration_seconds), 0) AS avg_view_duration,
                 COALESCE(SUM(va.watch_time_minutes), 0) AS watch_time_minutes
             FROM video_analytics va
-            JOIN videos v ON v.id = va.video_id
-            JOIN youtube_accounts ya ON ya.id = v.youtube_account_id
-            WHERE ya.channel_id = :cid
+            WHERE va.channel_id = :cid
             """
         ),
         {"cid": channel_id},
@@ -118,12 +116,13 @@ async def get_channel_overview(
     )
     dna_row = dna_result.fetchone()
 
-    # Last sync
+    # Last sync from youtube_accounts.last_analytics_sync
     sync_result = await db.execute(
-        text("SELECT MAX(pulled_at) FROM video_analytics va JOIN videos v ON v.id = va.video_id JOIN youtube_accounts ya ON ya.id = v.youtube_account_id WHERE ya.channel_id = :cid"),
+        text("SELECT last_analytics_sync FROM youtube_accounts WHERE channel_id = :cid"),
         {"cid": channel_id},
     )
-    last_synced = sync_result.scalar()
+    last_synced_row = sync_result.fetchone()
+    last_synced = last_synced_row._mapping["last_analytics_sync"] if last_synced_row else None
 
     return {
         "channel_id": channel_id,
@@ -158,33 +157,33 @@ async def list_videos_with_analytics(
         "views": "total_views DESC",
         "ctr": "avg_ctr DESC",
         "watch_time": "total_watch_time DESC",
-        "published_at": "v.created_at DESC",
+        "published_at": "published_at DESC",
     }
     order = sort_map.get(sort_by, "total_views DESC")
 
+    # Query video_analytics directly (video_id may be NULL for YouTube-only videos)
     result = await db.execute(
         text(
             f"""
             SELECT
-                v.id,
-                v.title,
-                v.duration_seconds,
-                v.created_at AS published_at,
+                va.youtube_video_id,
+                va.video_id,
+                COALESCE(v.title, va.video_title, va.youtube_video_id) AS title,
+                COALESCE(v.duration_seconds, 0) AS duration_seconds,
+                COALESCE(va.published_at, v.created_at) AS published_at,
                 COALESCE(SUM(va.views), 0) AS total_views,
                 COALESCE(AVG(va.impression_ctr), 0) AS avg_ctr,
                 COALESCE(SUM(va.watch_time_minutes), 0) AS total_watch_time,
                 COALESCE(AVG(va.avg_view_duration_seconds), 0) AS avg_view_duration_seconds,
                 COALESCE(AVG(va.avg_view_percentage), 0) AS avg_view_percentage,
-                COUNT(c.id) AS clips_generated,
-                COUNT(vrc.id) > 0 AS has_retention_data,
-                MAX(va.youtube_video_id) AS youtube_video_id
-            FROM videos v
-            JOIN youtube_accounts ya ON ya.id = v.youtube_account_id
-            LEFT JOIN video_analytics va ON va.video_id = v.id
-            LEFT JOIN clips c ON c.video_id = v.id
-            LEFT JOIN video_retention_curves vrc ON vrc.video_id = v.id
-            WHERE ya.channel_id = :cid
-            GROUP BY v.id
+                COUNT(DISTINCT c.id) AS clips_generated,
+                COUNT(DISTINCT vrc.id) > 0 AS has_retention_data
+            FROM video_analytics va
+            LEFT JOIN videos v ON v.id = va.video_id
+            LEFT JOIN clips c ON c.video_id = va.video_id
+            LEFT JOIN video_retention_curves vrc ON vrc.youtube_video_id = va.youtube_video_id
+            WHERE va.channel_id = :cid
+            GROUP BY va.youtube_video_id, va.video_id, v.title, va.video_title, v.duration_seconds, va.published_at, v.created_at
             ORDER BY {order}
             LIMIT :limit OFFSET :offset
             """
@@ -195,13 +194,7 @@ async def list_videos_with_analytics(
 
     # Total count
     count_result = await db.execute(
-        text(
-            """
-            SELECT COUNT(DISTINCT v.id) FROM videos v
-            JOIN youtube_accounts ya ON ya.id = v.youtube_account_id
-            WHERE ya.channel_id = :cid
-            """
-        ),
+        text("SELECT COUNT(DISTINCT youtube_video_id) FROM video_analytics WHERE channel_id = :cid"),
         {"cid": channel_id},
     )
     total = count_result.scalar() or 0
@@ -213,7 +206,7 @@ async def list_videos_with_analytics(
         clippable = duration > 600 and r.get("clips_generated", 0) == 0
         items.append(
             {
-                "video_id": str(r["id"]),
+                "video_id": str(r["video_id"]) if r.get("video_id") else None,
                 "youtube_video_id": r.get("youtube_video_id") or "",
                 "title": r.get("title", ""),
                 "published_at": r["published_at"].isoformat() if r.get("published_at") else None,

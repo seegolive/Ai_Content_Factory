@@ -18,6 +18,7 @@ from app.schemas.video import (
     VideoDetailOut,
     VideoFromUrlRequest,
     VideoOut,
+    VideoPreviewResponse,
     VideoStatusResponse,
     VideoUploadResponse,
 )
@@ -39,6 +40,67 @@ ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
 def _get_progress(checkpoint: Optional[str]) -> int:
     return STAGE_PROGRESS.get(checkpoint, 0)
+
+
+@router.get("/videos/preview", response_model=VideoPreviewResponse)
+async def preview_youtube_url(
+    url: str = Query(..., description="YouTube URL to preview"),
+    current_user: User = Depends(get_current_user),
+):
+    """Fetch video metadata from YouTube URL without downloading."""
+    import asyncio
+    import yt_dlp
+
+    if not ("youtube.com/watch" in url or "youtu.be/" in url):
+        raise HTTPException(status_code=400, detail="Must be a valid YouTube URL")
+
+    def _fetch_info():
+        opts = {
+            "quiet": True,
+            "skip_download": True,
+            "no_warnings": True,
+            "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    try:
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, _fetch_info)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not fetch video info: {e}")
+
+    if not info:
+        raise HTTPException(status_code=422, detail="No info returned from YouTube")
+
+    # Build list of available quality labels
+    formats = info.get("formats", [])
+    heights = sorted({f.get("height") for f in formats if f.get("height") and f.get("vcodec") != "none"}, reverse=True)
+    quality_labels = []
+    for h in heights:
+        if h >= 2160:
+            quality_labels.append("2160p (4K)")
+        elif h >= 1440:
+            quality_labels.append("1440p (2K)")
+        elif h >= 1080:
+            quality_labels.append("1080p (FHD)")
+        elif h >= 720:
+            quality_labels.append("720p (HD)")
+        else:
+            quality_labels.append(f"{h}p")
+    # Deduplicate while preserving order
+    seen = set()
+    available_qualities = [q for q in quality_labels if not (q in seen or seen.add(q))]
+
+    return VideoPreviewResponse(
+        title=info.get("title", "Unknown"),
+        thumbnail_url=info.get("thumbnail"),
+        duration_seconds=info.get("duration"),
+        uploader=info.get("uploader") or info.get("channel"),
+        view_count=info.get("view_count"),
+        upload_date=info.get("upload_date"),
+        available_qualities=available_qualities,
+    )
 
 
 @router.post("/videos/upload", response_model=VideoUploadResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -121,6 +183,8 @@ async def video_from_url(
         original_url=body.youtube_url,
         title=body.youtube_url,
         status="queued",
+        quality_preference=body.quality_preference or "1440p",
+        download_progress=0,
     )
     db.add(video)
     await db.commit()
@@ -210,7 +274,7 @@ async def get_video_status(
 ):
     """Lightweight polling endpoint for real-time status."""
     result = await db.execute(
-        select(Video.status, Video.checkpoint, Video.error_message).where(
+        select(Video.status, Video.checkpoint, Video.error_message, Video.download_progress).where(
             Video.id == video_id, Video.user_id == current_user.id
         )
     )
@@ -223,6 +287,7 @@ async def get_video_status(
         status=row.status,
         checkpoint=row.checkpoint,
         progress_percent=_get_progress(row.checkpoint),
+        download_progress=row.download_progress,
         current_stage=row.checkpoint,
         error_message=row.error_message,
     )

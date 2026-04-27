@@ -8,7 +8,7 @@ import {
   Youtube,
 } from "lucide-react";
 import { Header } from "@/components/layout/Header";
-import { useVideos, useVideoStatus, useYoutubeStats } from "@/lib/queries";
+import { useVideos, useVideoStatus, useYoutubeStats, useClipStats } from "@/lib/queries";
 import { formatRelativeTime } from "@/lib/utils";
 import { useState, useEffect, useRef } from "react";
 import { VideoUploader } from "@/components/video/VideoUploader";
@@ -204,11 +204,12 @@ export default function DashboardPage() {
   const { data: allVideos = [], isLoading } = useVideos();
   const { data: processingVideos = [] } = useVideos({ status: "processing" });
   const { data: reviewVideos = [] } = useVideos({ status: "review" });
-  const { data: doneVideos = [] } = useVideos({ status: "done" });
   const { data: ytData } = useYoutubeStats();
+  const { data: clipStats } = useClipStats();
 
-  const totalClips = allVideos.reduce((sum, v) => sum + v.clips_count, 0);
-  const pendingReview = reviewVideos.reduce((sum, v) => sum + v.clips_count, 0);
+  const totalClips    = clipStats?.total     ?? 0;
+  const pendingReview = clipStats?.pending   ?? 0;
+  const publishedClips = clipStats?.published ?? 0;
 
   const [greeting, setGreeting] = useState<string>("");
   useEffect(() => {
@@ -280,10 +281,10 @@ export default function DashboardPage() {
               <><SkeletonStatCard /><SkeletonStatCard /><SkeletonStatCard /><SkeletonStatCard /></>
             ) : (
               <>
-                <div className="anim-0"><StatCard label="Total Videos"    value={allVideos.length}    icon={Video}       color="primary"   /></div>
-                <div className="anim-1"><StatCard label="Clips Generated" value={totalClips}          icon={Scissors}    color="secondary" /></div>
-                <div className="anim-2"><StatCard label="Pending Review"  value={pendingReview}       icon={Eye}         color="warning"   /></div>
-                <div className="anim-3"><StatCard label="Published"       value={doneVideos.length}   icon={CheckCircle} color="danger"    /></div>
+                <div className="anim-0"><StatCard label="Total Videos"    value={allVideos.length}  icon={Video}       color="primary"   /></div>
+                <div className="anim-1"><StatCard label="Clips Generated" value={totalClips}        icon={Scissors}    color="secondary" /></div>
+                <div className="anim-2"><StatCard label="Pending Review"  value={pendingReview}     icon={Eye}         color="warning"   /></div>
+                <div className="anim-3"><StatCard label="Published"       value={publishedClips}    icon={CheckCircle} color="danger"    /></div>
               </>
             )}
           </div>

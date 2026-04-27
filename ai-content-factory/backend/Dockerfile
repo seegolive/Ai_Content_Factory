@@ -6,7 +6,12 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
     curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Deno (required by yt-dlp for YouTube JS signature solving → enables 1080p/1440p)
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV PATH="/root/.deno/bin:${PATH}"
 
 WORKDIR /app
 

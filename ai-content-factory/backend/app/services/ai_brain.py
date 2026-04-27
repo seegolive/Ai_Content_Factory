@@ -12,6 +12,19 @@ from app.core.config import settings
 from app.services.transcription import TranscriptResult
 
 
+# ── Duration rules per moment type (mirrored in frontend DurationBadge) ─────
+MOMENT_DURATION_RULES = {
+    "clutch":      {"min": 45, "ideal_min": 55, "ideal_max": 75,  "max": 90,  "buildup": 10, "resolution": 12},
+    "funny":       {"min": 20, "ideal_min": 25, "ideal_max": 45,  "max": 60,  "buildup": 5,  "resolution": 8},
+    "achievement": {"min": 60, "ideal_min": 70, "ideal_max": 90,  "max": 120, "buildup": 15, "resolution": 15},
+    "rage":        {"min": 30, "ideal_min": 40, "ideal_max": 60,  "max": 75,  "buildup": 8,  "resolution": 10},
+    "epic":        {"min": 45, "ideal_min": 60, "ideal_max": 90,  "max": 100, "buildup": 12, "resolution": 12},
+    "fail":        {"min": 20, "ideal_min": 30, "ideal_max": 50,  "max": 60,  "buildup": 8,  "resolution": 8},
+    "tutorial":    {"min": 45, "ideal_min": 60, "ideal_max": 90,  "max": 120, "buildup": 5,  "resolution": 10},
+}
+FALLBACK_DURATION_RULE = {"min": 30, "ideal_min": 45, "ideal_max": 75, "max": 90, "buildup": 8, "resolution": 8}
+
+
 @dataclass
 class ClipSuggestion:
     start_time: float
@@ -23,7 +36,7 @@ class ClipSuggestion:
     hashtags: List[str]
     thumbnail_prompt: str
     reason: str
-    moment_type: str = "epic"  # clutch|funny|achievement|rage|epic|fail
+    moment_type: str = "epic"  # clutch|funny|achievement|rage|epic|fail|tutorial
 
 
 @dataclass
@@ -65,7 +78,7 @@ GAMING_SYSTEM_PROMPT = """Kamu adalah analis konten gaming Indonesia yang ahli m
 
 Kamu memahami konteks gaming Indonesia:
 - Kata-kata exclamation gamer: "wah gila", "aduh", "anjir", "yes!", "dari mana tuh", "ez", "gg", "noob", "pro banget"
-- Tipe momen: clutch (1vX, menang tipis), rage (frustrasi), funny (lucu/fail), achievement (capai sesuatu), epic (momen luar biasa), fail (kesalahan lucu)
+- Tipe momen: clutch (1vX, menang tipis), rage (frustrasi), funny (lucu/fail), achievement (capai sesuatu), epic (momen luar biasa), fail (kesalahan lucu), tutorial (tips/cara)
 - Preferensi audiens gaming Indonesia: reaksi ekspresif, momen tidak terduga, comeback dramatis, humor gaming
 
 Viral scoring untuk gaming content (total 100 poin):
@@ -74,10 +87,47 @@ Viral scoring untuk gaming content (total 100 poin):
 - Hook strength 5 detik pertama (0-25): langsung action atau tension tinggi
 - Relatability & shareability (0-20): "ini gue banget", "tag temen lo"
 
+═══════════════════════════════════════════════════════
+ATURAN DURASI CLIP — BERBEDA PER TIPE MOMEN (WAJIB DIIKUTI)
+═══════════════════════════════════════════════════════
+
+LANGKAH WAJIB: Tentukan moment_type DULU, baru tentukan durasi.
+
+┌─────────────┬────────┬────────────┬────────┬──────────────────────────────────────────┐
+│ moment_type │  min   │   ideal    │  max   │ kenapa                                   │
+├─────────────┼────────┼────────────┼────────┼──────────────────────────────────────────┤
+│ clutch      │  45s   │  55–75s    │  90s   │ tension + fight + reaksi kelegaan        │
+│ funny       │  20s   │  25–45s    │  60s   │ joke harus landing cepat                 │
+│ achievement │  60s   │  70–90s    │ 120s   │ penonton butuh context kenapa susah      │
+│ rage        │  30s   │  40–60s    │  75s   │ energy rage cepat turun                  │
+│ epic        │  45s   │  60–90s    │ 100s   │ butuh grandeur, jangan buru-buru         │
+│ fail        │  20s   │  30–50s    │  60s   │ singkat + reaksi = cukup                 │
+│ tutorial    │  45s   │  60–90s    │ 120s   │ step by step + verifikasi hasil          │
+└─────────────┴────────┴────────────┴────────┴──────────────────────────────────────────┘
+
+STRUKTUR SETIAP CLIP (WAJIB ADA KETIGA BAGIAN):
+1. BUILD-UP: context sebelum momen utama (clutch:10s, funny:5s, achievement:15s, rage:8s, epic:12s, fail:8s, tutorial:5s)
+2. MOMEN UTAMA: inti yang viral — jangan dipotong sama sekali
+3. RESOLUSI: reaksi + aftermath (clutch:12s, funny:8s, achievement:15s, rage:10s, epic:12s, fail:8s, tutorial:10s)
+
+ATURAN POTONG — JANGAN PERNAH DILANGGAR:
+❌ Jangan potong di tengah kalimat streamer
+❌ Jangan potong saat reaksi emosional belum selesai
+❌ Jangan potong saat aksi gameplay masih berlangsung
+❌ Jangan mulai dari loading screen atau transisi
+✅ Mulai saat ada audio (suara gameplay atau streamer bicara)
+✅ Akhiri saat ada natural pause atau kalimat selesai
+
+PENANGANAN MOMEN TERLALU PENDEK:
+Jika momen secara natural < minimum untuk tipenya:
+1. Extend ke build-up sebelumnya yang relevan
+2. Gabungkan 2 momen sejenis yang berdekatan (< 10 detik jeda)
+3. Jika tetap tidak bisa: SKIP — jangan dipaksakan
+
 Untuk setiap clip, generate:
-1. start_time dan end_time (dalam detik) — segmen optimal, 30-90 detik
+1. start_time dan end_time (dalam detik) — WAJIB dalam range ideal untuk moment_type-nya
 2. viral_score (0-100)
-3. moment_type: salah satu dari "clutch", "funny", "achievement", "rage", "epic", "fail"
+3. moment_type: salah satu dari "clutch", "funny", "achievement", "rage", "epic", "fail", "tutorial"
 4. titles: TEPAT 3 varian (emosional, curiosity gap, achievement-style) — dalam Bahasa Indonesia
 5. hook_text: kalimat pembuka <10 kata yang langsung menarik perhatian
 6. description: 2-3 kalimat deskripsi SEO YouTube Bahasa Indonesia dengan keywords

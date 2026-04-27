@@ -25,6 +25,10 @@ YOUTUBE_SCOPES = [
     "profile",
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    # Analytics API: required for averageViewDuration, watch time, etc.
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+    # Monetary Analytics API: required for impressions + CTR
+    "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
 ]
 
 

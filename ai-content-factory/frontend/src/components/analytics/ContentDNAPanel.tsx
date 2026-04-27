@@ -52,9 +52,7 @@ export function ContentDNAPanel({ channelId }: Props) {
       <div className="analytics-chart-header">
         <h3 className="analytics-section-title">
           <Brain size={16} /> Content DNA
-          <span className="analytics-ai-badge" style={{ background: "rgba(108,99,255,0.1)", color: "#6C63FF" }}>
-            AI Learning
-          </span>
+          <span className="analytics-ai-badge">AI Learning</span>
         </h3>
         {dna?.last_updated && (
           <span className="muted" style={{ fontSize: 11 }}>

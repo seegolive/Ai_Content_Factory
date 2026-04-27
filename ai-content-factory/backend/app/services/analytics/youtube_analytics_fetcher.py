@@ -61,10 +61,22 @@ class YouTubeAnalyticsFetcher:
         self._channel_id = channel_id
         self._redis = redis_client
 
+        # client_id / client_secret are required for token refresh.
+        # They live in app config (env vars), not in the DB.
+        try:
+            from app.core.config import settings
+            client_id = settings.GOOGLE_CLIENT_ID
+            client_secret = settings.GOOGLE_CLIENT_SECRET
+        except Exception:
+            client_id = None
+            client_secret = None
+
         creds = Credentials(
             token=access_token,
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id or None,
+            client_secret=client_secret or None,
         )
         self._yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
         self._yta = build("youtubeAnalytics", "v2", credentials=creds, cache_discovery=False)
@@ -162,7 +174,6 @@ class YouTubeAnalyticsFetcher:
         metrics = (
             "views,likes,comments,shares,"
             "estimatedMinutesWatched,averageViewDuration,averageViewPercentage,"
-            "impressions,impressionsClickThroughRate,"
             "subscribersGained,subscribersLost"
         )
 
@@ -201,8 +212,8 @@ class YouTubeAnalyticsFetcher:
                 watch_time_minutes=float(data.get("estimatedMinutesWatched", 0)),
                 avg_view_duration_seconds=float(data.get("averageViewDuration", 0)),
                 avg_view_percentage=float(data.get("averageViewPercentage", 0)),
-                impressions=int(data.get("impressions", 0)),
-                impression_ctr=float(data.get("impressionsClickThroughRate", 0)),
+                impressions=0,
+                impression_ctr=0.0,
                 subscribers_gained=int(data.get("subscribersGained", 0)),
                 subscribers_lost=int(data.get("subscribersLost", 0)),
                 traffic_sources=traffic_data,
