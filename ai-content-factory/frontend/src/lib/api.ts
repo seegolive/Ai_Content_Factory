@@ -162,4 +162,52 @@ export const youtubeApi = {
     }>("/youtube/analytics"),
 };
 
+// ── Analytics ────────────────────────────────────────────────────────────────
+
+import type {
+  ChannelOverview,
+  ContentDNAModel,
+  DailyStats,
+  GamePerformanceResponse,
+  RetentionCurve,
+  VideoOpportunity,
+  VideoWithAnalytics,
+  WeeklyInsightReport,
+} from "@/types/analytics";
+
+export const analyticsApi = {
+  getOverview: (channelId: string) =>
+    api.get<ChannelOverview>(`/analytics/channel/${channelId}/overview`),
+
+  getVideos: (
+    channelId: string,
+    params?: { limit?: number; offset?: number; sort_by?: string }
+  ) =>
+    api.get<{ items: VideoWithAnalytics[]; total: number; limit: number; offset: number }>(
+      `/analytics/channel/${channelId}/videos`,
+      { params }
+    ),
+
+  getRetentionCurve: (youtubeVideoId: string) =>
+    api.get<RetentionCurve>(`/analytics/videos/${youtubeVideoId}/retention`),
+
+  getContentDNA: (channelId: string) =>
+    api.get<ContentDNAModel>(`/analytics/channel/${channelId}/content-dna`),
+
+  getOpportunities: (channelId: string) =>
+    api.get<{ items: VideoOpportunity[] }>(`/analytics/channel/${channelId}/opportunities`),
+
+  getWeeklyReport: (channelId: string) =>
+    api.get<WeeklyInsightReport>(`/analytics/channel/${channelId}/weekly-report/latest`),
+
+  getDailyStats: (channelId: string, days: number = 30) =>
+    api.get<DailyStats>(`/analytics/channel/${channelId}/daily-stats`, { params: { days } }),
+
+  triggerSync: (channelId: string) =>
+    api.post<{ task_id: string; message: string }>(`/analytics/channel/${channelId}/sync`),
+
+  getGamePerformance: (channelId: string) =>
+    api.get<GamePerformanceResponse>(`/analytics/channel/${channelId}/game-performance`),
+};
+
 export default api;

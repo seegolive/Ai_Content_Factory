@@ -13,8 +13,11 @@ celery_app = Celery(
         "app.workers.tasks.analyze",
         "app.workers.tasks.process_video",
         "app.workers.tasks.distribute",
+        "app.workers.tasks.analytics",
     ],
 )
+
+from celery.schedules import crontab
 
 celery_app.conf.update(
     task_serializer="json",
@@ -30,5 +33,20 @@ celery_app.conf.update(
     task_routes={
         "app.workers.tasks.pipeline.*": {"queue": "pipeline"},
         "app.workers.tasks.distribute.*": {"queue": "distribute"},
+        "app.workers.tasks.analytics.*": {"queue": "analytics"},
+    },
+    beat_schedule={
+        # 06:00 WIB = 23:00 UTC
+        "sync-analytics-daily": {
+            "task": "app.workers.tasks.analytics.sync_channel_analytics",
+            "schedule": crontab(hour=23, minute=0),
+            "args": [],  # populated dynamically per account
+        },
+        # Senin 07:00 WIB = 00:00 UTC Monday
+        "weekly-insight-monday": {
+            "task": "app.workers.tasks.analytics.generate_weekly_insight_report",
+            "schedule": crontab(hour=0, minute=0, day_of_week=1),
+            "args": [],
+        },
     },
 )
