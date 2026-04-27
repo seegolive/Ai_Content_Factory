@@ -42,6 +42,23 @@ export default function ReviewPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
+
+  // Fetch a short-lived signed token whenever the active clip changes.
+  // This lets the browser <video> element stream the file without needing
+  // to send an Authorization header (which native elements can't do).
+  useEffect(() => {
+    if (!activeClip?.id) { setStreamUrl(null); return; }
+    let cancelled = false;
+    clipsApi.getStreamToken(activeClip.id)
+      .then((res) => {
+        if (!cancelled) setStreamUrl(clipsApi.streamUrl(activeClip.id, res.data.token));
+      })
+      .catch(() => {
+        if (!cancelled) setStreamUrl(null);
+      });
+    return () => { cancelled = true; };
+  }, [activeClip?.id]);
 
   useEffect(() => {
     if (!reviewActiveClipId && pendingClips.length > 0) {
@@ -190,7 +207,7 @@ export default function ReviewPage() {
                 <video
                   ref={videoRef}
                   key={activeClip.id}
-                  src={clipsApi.streamUrl(activeClip.id)}
+                  src={streamUrl ?? undefined}
                   style={{ maxHeight: "55vh", maxWidth: "100%", display: "block" }}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}

@@ -1,16 +1,19 @@
 """Clips review and management routes."""
 import os
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db
+from app.core.security import bearer_scheme, create_access_token, verify_token
 from app.models.clip import Clip
 from app.models.user import User
 from app.models.video import Video
@@ -184,24 +187,83 @@ async def publish_clip(
         )
 
 
-@router.get("/clips/{clip_id}/stream")
-async def stream_clip(
+@router.get("/clips/{clip_id}/stream-token")
+async def get_stream_token(
     clip_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Stream clip file with Range support for video player seek."""
+    """Issue a short-lived (1h) signed token for use as ?token= in the stream URL.
+
+    This allows the browser's native <video> element to stream authenticated
+    clip files without needing to set an Authorization header.
+    """
     clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    if not clip.clip_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found")
+
+    token = create_access_token(
+        {"sub": str(current_user.id), "type": "stream", "clip_id": str(clip_id)},
+        expires_delta=timedelta(hours=1),
+    )
+    return {"token": token, "expires_in": 3600}
+
+
+@router.get("/clips/{clip_id}/stream")
+async def stream_clip(
+    clip_id: uuid.UUID,
+    request: Request,
+    token: Optional[str] = Query(None, description="Short-lived stream token from /stream-token"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream clip file with Range support for video player seek.
+
+    Authentication: accepts either:
+    - ?token=<stream_token>  (from /stream-token endpoint, for <video> tags)
+    - Authorization: Bearer <jwt>  (standard API auth)
+    """
+    # Resolve token from query param or Authorization header
+    raw_token = token or (credentials.credentials if credentials else None)
+    if not raw_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    user_id = verify_token(raw_token)
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+    # Verify clip ownership
+    result = await db.execute(
+        select(Clip).where(Clip.id == clip_id)
+    )
+    clip = result.scalar_one_or_none()
+    if not clip or str(clip.user_id) != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found")
+
     if not clip.clip_path or not os.path.exists(clip.clip_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found")
 
     file_size = os.path.getsize(clip.clip_path)
 
-    def iterfile(path: str, start: int = 0, end: int = None):
-        end = end or file_size - 1
+    # Parse Range header for seek support
+    range_header = request.headers.get("Range")
+    start, end = 0, file_size - 1
+    http_status = 200
+
+    if range_header:
+        match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) else file_size - 1
+            end = min(end, file_size - 1)
+            http_status = 206
+
+    content_length = end - start + 1
+
+    def iterfile(path: str, byte_start: int, byte_end: int):
         with open(path, "rb") as f:
-            f.seek(start)
-            remaining = end - start + 1
+            f.seek(byte_start)
+            remaining = byte_end - byte_start + 1
             chunk_size = 65536
             while remaining > 0:
                 data = f.read(min(chunk_size, remaining))
@@ -211,10 +273,12 @@ async def stream_clip(
                 yield data
 
     return StreamingResponse(
-        iterfile(clip.clip_path),
+        iterfile(clip.clip_path, start, end),
+        status_code=http_status,
         media_type="video/mp4",
         headers={
-            "Content-Length": str(file_size),
+            "Content-Length": str(content_length),
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
         },
     )

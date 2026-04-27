@@ -114,7 +114,16 @@ export const clipsApi = {
   publish: (clipId: string, platforms: string[], youtube_account_id?: string) =>
     api.post(`/clips/${clipId}/publish`, { platforms, youtube_account_id }),
 
-  streamUrl: (clipId: string) => `${BASE_URL}/api/v1/clips/${clipId}/stream`,
+  /** Fetch a short-lived (1h) signed token for streaming a clip file.
+   *  Use the returned token as ?token= in streamUrl(). */
+  getStreamToken: (clipId: string) =>
+    api.get<{ token: string; expires_in: number }>(`/clips/${clipId}/stream-token`),
+
+  /** Build a stream URL with an authenticated query-param token.
+   *  Pass the token from getStreamToken() so the browser <video> element
+   *  can authenticate without sending an Authorization header. */
+  streamUrl: (clipId: string, token: string) =>
+    `${BASE_URL}/api/v1/clips/${clipId}/stream?token=${encodeURIComponent(token)}`,
 };
 
 // ── YouTube ──────────────────────────────────────────────────────────────────
