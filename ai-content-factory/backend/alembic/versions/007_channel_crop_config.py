@@ -26,7 +26,7 @@ def upgrade() -> None:
         BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'vertical_crop_mode') THEN
                 CREATE TYPE vertical_crop_mode AS ENUM (
-                    'blur_pillarbox', 'smart_offset', 'dual_zone', 'passthrough'
+                    'blur_pillarbox', 'smart_offset', 'dual_zone', 'passthrough', 'center_crop', 'blur_letterbox'
                 );
             END IF;
         END$$;
@@ -67,7 +67,7 @@ def upgrade() -> None:
         sa.Column(
             "default_vertical_crop_mode",
             pgENUM(
-                "blur_pillarbox", "smart_offset", "dual_zone", "passthrough",
+                "blur_pillarbox", "smart_offset", "dual_zone", "passthrough", "center_crop", "blur_letterbox",
                 name="vertical_crop_mode", create_type=False
             ),
             nullable=False, server_default="blur_pillarbox",
@@ -108,7 +108,7 @@ def upgrade() -> None:
         sa.Column(
             "vertical_crop_mode",
             pgENUM(
-                "blur_pillarbox", "smart_offset", "dual_zone", "passthrough",
+                "blur_pillarbox", "smart_offset", "dual_zone", "passthrough", "center_crop", "blur_letterbox",
                 name="vertical_crop_mode", create_type=False
             ),
             nullable=False, server_default="blur_pillarbox",

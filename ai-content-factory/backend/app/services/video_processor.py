@@ -293,8 +293,10 @@ class VideoProcessorService:
                 if tp_match:
                     peak_db = float(tp_match.group(1))
                     metrics["peak_db"] = peak_db
-                    if peak_db > -1.0:
+                    if peak_db > 0.0:
                         issues.append(QCIssue(type="clipping", description=f"Audio peak too high: {peak_db:.1f}dB", severity="error"))
+                    elif peak_db > -1.0:
+                        issues.append(QCIssue(type="clipping", description=f"Audio peak near clipping: {peak_db:.1f}dB", severity="warning"))
         except Exception as e:
             logger.warning(f"Loudnorm check failed: {e}")
 
@@ -315,14 +317,117 @@ class VideoProcessorService:
         """
         source_h = channel_config.obs_canvas_height if channel_config else 1440
         source_w = channel_config.obs_canvas_width if channel_config else 2560
-        mode = (game_profile.vertical_crop_mode if game_profile else None) or "blur_pillarbox"
+        # Resolve crop mode: channel_config default is user's explicit choice and takes priority.
+        # Game profile can override only if channel_config has no explicit preference.
+        mode = (
+            (channel_config.default_vertical_crop_mode if channel_config else None)
+            or (game_profile.vertical_crop_mode if game_profile else None)
+            or "blur_pillarbox"
+        )
 
+        logger.info(f"[VideoProcessor] resize_to_vertical mode={mode} src={source_w}x{source_h}")
         if mode == "smart_offset":
             return await self._crop_smart_offset(input_path, output_path, game_profile, source_w, source_h)
         elif mode == "dual_zone":
             return await self._crop_dual_zone(input_path, output_path, game_profile, source_w, source_h)
+        elif mode == "center_crop":
+            return await self._crop_center(input_path, output_path, source_w, source_h)
+        elif mode == "blur_letterbox":
+            return await self._crop_blur_letterbox(input_path, output_path, source_w, source_h)
         else:
             return await self._crop_blur_pillarbox(input_path, output_path, source_w, source_h)
+
+    async def _crop_center(
+        self, input_path: str, output_path: str, source_w: int, source_h: int
+    ) -> str:
+        """
+        Simple center crop: take the 9:16 portion from the middle of the 16:9 frame.
+        Gameplay fills the full 1080x1920 canvas — no bars, no blur.
+        Best for games where the important action is in the center.
+        """
+        crop_h = source_h
+        crop_w = int(source_h * 9 / 16)
+        x = (source_w - crop_w) // 2
+        x = max(0, min(x, source_w - crop_w))
+
+        encoder = get_encoder()
+        params = {"cq": "18", "crf": "18", "preset": "medium", "bitrate": "8M"}
+        vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=1080:1920"
+        cmd = (
+            ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+            + build_video_encode_flags(encoder, params)
+            + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+        )
+        try:
+            await self._run_ffmpeg(cmd)
+        except VideoProcessingError as e:
+            if encoder in ("av1_nvenc", "h264_nvenc"):
+                logger.warning(f"NVENC center crop failed, falling back: {e}")
+                cmd_cpu = (
+                    ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+                    + build_cpu_encode_flags(params)
+                    + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+                )
+                await self._run_ffmpeg(cmd_cpu)
+            else:
+                raise
+        return output_path
+
+    async def _crop_blur_letterbox(
+        self, input_path: str, output_path: str, source_w: int, source_h: int
+    ) -> str:
+        """
+        Shorts-style blur letterbox (9:16 canvas = 1080x1920):
+
+          Layout:
+            [ BLUR TOP    ]  ~353px  — blur fills top gap
+            [ 16:9 VIDEO  ]  ~1214px — 200% zoom, centered (left/right overflow cropped ~540px each side)
+            [ BLUR BOTTOM ]  ~353px  — blur fills bottom gap
+
+          Content pipeline:
+            1. Scale video to 200% of canvas width (2×1080 = 2160px wide)
+            2. Center-overlay on 1080x1920 canvas → left/right auto-cropped by canvas bounds
+            3. Blur fills only top/bottom gaps — no explicit crop step needed
+        """
+        encoder = get_encoder()
+        params = {"cq": "19", "crf": "20", "preset": "fast", "bitrate": "5M"}
+
+        vf = (
+            # Split into background (bg) and foreground (fg)
+            "split=2[bg][fg];"
+            # Background: fill full 1080x1920, heavy blur, darken 18%
+            "[bg]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,"
+            "boxblur=luma_radius=50:luma_power=4:chroma_radius=50:chroma_power=4,"
+            "colorchannelmixer=rr=0.82:gg=0.82:bb=0.82[blurred];"
+            # Foreground: scale to 200% of canvas width (2160px) → center on canvas
+            # Left/right overflow (~540px each side) is auto-cropped by canvas bounds
+            # -2 ensures even height for NVENC compatibility
+            "[fg]scale=2160:-2[big];"
+            # Composite: centered — blur only fills top/bottom gaps
+            "[blurred][big]overlay=(W-w)/2:(H-h)/2"
+        )
+        # Use NVENC for encoding (GPU). Decode stays on CPU because software filters
+        # (split, boxblur, overlay) require CPU frames — hwaccel cuda would break them.
+        cmd = (
+            ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+            + build_video_encode_flags(encoder, params)
+            + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+        )
+        try:
+            await self._run_ffmpeg(cmd)
+        except VideoProcessingError as e:
+            if encoder in ("av1_nvenc", "h264_nvenc"):
+                logger.warning(f"NVENC blur_letterbox failed, falling back to CPU: {e}")
+                cmd_cpu = (
+                    ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+                    + build_cpu_encode_flags(params)
+                    + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+                )
+                await self._run_ffmpeg(cmd_cpu)
+            else:
+                raise
+        return output_path
 
     async def _crop_blur_pillarbox(
         self, input_path: str, output_path: str, source_w: int, source_h: int

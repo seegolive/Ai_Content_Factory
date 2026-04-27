@@ -2,11 +2,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Settings, Scan, Eye, Save, ChevronDown, Check, AlertCircle, RefreshCw } from "lucide-react";
 import { Header } from "@/components/layout/Header";
-import { useVideos } from "@/lib/queries";
+import { useVideos, useYoutubeStats } from "@/lib/queries";
 import api from "@/lib/api";
 import { toast } from "sonner";
 
-type CropMode = "blur_pillarbox" | "smart_offset" | "dual_zone";
+type CropMode = "blur_pillarbox" | "smart_offset" | "dual_zone" | "center_crop" | "blur_letterbox";
 type FacecamPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right" | "top_center_full" | "none";
 type CropAnchor = "left" | "center" | "right";
 
@@ -42,10 +42,36 @@ const CROP_MODE_INFO: Record<CropMode, {
   comingSoon?: boolean;
   illustration: React.ReactNode;
 }> = {
+  center_crop: {
+    label: "Center Crop",
+    desc: "Potong bagian tengah 9:16 dari frame 16:9. Gameplay penuh tanpa bar, tanpa blur. Cocok untuk Battlefield, FPS, game aksi.",
+    recommended: true,
+    illustration: (
+      <div style={{ width: "100%", height: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 3 }}>
+        <div style={{ width: 10, height: 72, background: "rgba(99,102,241,0.15)", borderRadius: 3, border: "1px dashed rgba(99,102,241,0.2)" }} />
+        <div style={{ width: 44, height: 72, background: "rgba(99,102,241,0.9)", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#fff", fontWeight: 700, flexDirection: "column", gap: 2 }}>
+          <span>9:16</span>
+          <span style={{ fontSize: 7, opacity: 0.8 }}>CROP</span>
+        </div>
+        <div style={{ width: 10, height: 72, background: "rgba(99,102,241,0.15)", borderRadius: 3, border: "1px dashed rgba(99,102,241,0.2)" }} />
+      </div>
+    ),
+  },
+  blur_letterbox: {
+    label: "Blur Letterbox",
+    desc: "Video 16:9 full width (1.3x zoom, facecam terpotong), blur hanya mengisi area kosong atas/bawah. Gaya Shorts — tidak ada black bars.",
+    recommended: true,
+    illustration: (
+      <div style={{ width: 48, height: 80, margin: "0 auto", borderRadius: 4, overflow: "hidden", border: "1px solid rgba(99,102,241,0.3)", display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: "0 0 34%", background: "rgba(30,20,60,0.85)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 6, color: "rgba(255,255,255,0.4)", fontWeight: 600, filter: "blur(1px)" }}>blur</div>
+        <div style={{ flex: "0 0 32%", background: "rgba(99,102,241,0.85)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 7, color: "#fff", fontWeight: 700 }}>16:9</div>
+        <div style={{ flex: "0 0 34%", background: "rgba(30,20,60,0.85)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 6, color: "rgba(255,255,255,0.4)", fontWeight: 600, filter: "blur(1px)" }}>blur</div>
+      </div>
+    ),
+  },
   blur_pillarbox: {
     label: "Blur Pillarbox",
     desc: "Video asli ditengahkan dengan sisi kiri-kanan diberi blur. Aman untuk semua game.",
-    recommended: true,
     illustration: (
       <div style={{ width: "100%", height: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 3 }}>
         <div style={{ width: 24, height: 72, background: "rgba(99,102,241,0.3)", borderRadius: 3, filter: "blur(2px)" }} />
@@ -82,12 +108,15 @@ const CROP_MODE_INFO: Record<CropMode, {
 };
 
 export default function CropConfigPage() {
-  // Get user's YouTube channel from videos (proxy for channel info)
-  const { data: videos = [] } = useVideos({ status: "done" });
-  const channelId = "UCZtV_QayiN8qJeTGWA8YSrw"; // TODO: pull from user context
+  const { data: ytData, isLoading: ytLoading } = useYoutubeStats();
+  const channelId: string | null = ytData?.accounts?.[0]?.channel_id ?? null;
+
+  const { data: doneVideos = [] } = useVideos({ status: "done" });
+  const { data: reviewVideos = [] } = useVideos({ status: "review" });
+  const videos = doneVideos.length > 0 ? doneVideos : reviewVideos;
 
   const [config, setConfig] = useState<CropConfig>({
-    default_vertical_crop_mode: "blur_pillarbox",
+    default_vertical_crop_mode: "center_crop",
     default_facecam_position: "top_left",
     default_crop_x_offset: 0,
     default_crop_anchor: "left",
@@ -104,10 +133,16 @@ export default function CropConfigPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [detectedRegion, setDetectedRegion] = useState<{ position: string; x: number; y: number; width: number; height: number } | null>(null);
+  const [skipIntroMinutes, setSkipIntroMinutes] = useState(10);
   const previewDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load config on mount
+  // Load config when channelId is available
   useEffect(() => {
+    if (ytLoading) return;
+    if (!channelId) {
+      setLoading(false);
+      return;
+    }
     (async () => {
       try {
         const res = await api.get(`/settings/channel/${channelId}/crop-config`);
@@ -118,7 +153,7 @@ export default function CropConfigPage() {
         setLoading(false);
       }
     })();
-  }, [channelId]);
+  }, [channelId, ytLoading]);
 
   const latestVideoId = videos[0]?.id;
 
@@ -176,6 +211,7 @@ export default function CropConfigPage() {
     try {
       const res = await api.post(`/settings/channel/${channelId}/detect-facecam`, {
         video_id: latestVideoId,
+        start_offset_seconds: skipIntroMinutes * 60,
       });
       if (res.data.detected) {
         setDetectedRegion(res.data.region);
@@ -201,6 +237,59 @@ export default function CropConfigPage() {
   const updateMode = (mode: CropMode) => {
     setConfig((prev) => ({ ...prev, default_vertical_crop_mode: mode }));
   };
+
+  // Show loading while fetching YouTube account info
+  if (ytLoading || loading) {
+    return (
+      <>
+        <Header breadcrumb={[{ label: "Settings" }, { label: "Vertical Crop" }]} />
+        <div className="page-scroll">
+          <div className="page-body" style={{ maxWidth: 820, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300 }}>
+            <div style={{ textAlign: "center", color: "var(--text-4)" }}>
+              <RefreshCw size={24} style={{ animation: "spin 1s linear infinite", marginBottom: 12 }} />
+              <p style={{ fontSize: 13, margin: 0 }}>Memuat konfigurasi...</p>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Show empty state if user hasn't connected a YouTube account
+  if (!channelId) {
+    return (
+      <>
+        <Header breadcrumb={[{ label: "Settings" }, { label: "Vertical Crop" }]} />
+        <div className="page-scroll">
+          <div className="page-body" style={{ maxWidth: 820 }}>
+            <div style={{
+              padding: "48px 32px", borderRadius: 16, border: "1px solid var(--border-1)",
+              background: "var(--bg-2)", textAlign: "center",
+            }}>
+              <AlertCircle size={36} color="var(--text-4)" style={{ marginBottom: 16, opacity: 0.5 }} />
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: "var(--text-1)", marginBottom: 8 }}>
+                Belum Ada Akun YouTube
+              </h2>
+              <p style={{ fontSize: 13, color: "var(--text-3)", marginBottom: 24 }}>
+                Hubungkan akun YouTube kamu dulu di halaman Settings sebelum mengatur konfigurasi crop.
+              </p>
+              <a
+                href="/settings"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  padding: "10px 20px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+                  background: "var(--primary)", color: "#fff", textDecoration: "none",
+                }}
+              >
+                <Settings size={14} />
+                Buka Settings
+              </a>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -281,7 +370,7 @@ export default function CropConfigPage() {
             <div style={{
               padding: "16px 20px",
               background: "var(--bg-2)", border: "1px solid var(--border-1)", borderRadius: 12,
-              display: "flex", alignItems: "center", gap: 16,
+              display: "flex", alignItems: "flex-start", gap: 16,
             }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)", marginBottom: 4 }}>
@@ -299,6 +388,24 @@ export default function CropConfigPage() {
                     ✓ Terdeteksi di {detectedRegion.position} ({detectedRegion.width}×{detectedRegion.height}px)
                   </div>
                 )}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+                  <label style={{ fontSize: 12, color: "var(--text-3)", whiteSpace: "nowrap" }}>
+                    Skip intro:
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={120}
+                    value={skipIntroMinutes}
+                    onChange={(e) => setSkipIntroMinutes(Math.max(0, parseInt(e.target.value) || 0))}
+                    style={{
+                      width: 64, padding: "4px 8px", borderRadius: 6,
+                      background: "var(--bg-3)", border: "1px solid var(--border-2)",
+                      color: "var(--text-1)", fontSize: 13, textAlign: "center",
+                    }}
+                  />
+                  <span style={{ fontSize: 12, color: "var(--text-4)" }}>menit</span>
+                </div>
               </div>
               <button
                 onClick={handleDetect}
@@ -311,6 +418,7 @@ export default function CropConfigPage() {
                   color: detecting ? "var(--text-4)" : "var(--secondary)",
                   cursor: detecting || !latestVideoId ? "not-allowed" : "pointer",
                   whiteSpace: "nowrap",
+                  alignSelf: "flex-end",
                 }}
               >
                 {detecting ? <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Scan size={14} />}

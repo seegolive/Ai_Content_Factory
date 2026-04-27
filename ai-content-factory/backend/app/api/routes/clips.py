@@ -313,6 +313,7 @@ async def stream_clip(
     clip_id: uuid.UUID,
     request: Request,
     token: Optional[str] = Query(None, description="Short-lived stream token from /stream-token"),
+    format: Optional[str] = Query(None, description="'vertical' to stream 9:16 version"),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ):
@@ -339,10 +340,15 @@ async def stream_clip(
     if not clip or str(clip.user_id) != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found")
 
-    if not clip.clip_path or not os.path.exists(clip.clip_path):
+    # Resolve which file to serve based on format param
+    if format == "vertical" and clip.clip_path_vertical and os.path.exists(clip.clip_path_vertical):
+        file_path = clip.clip_path_vertical
+    elif not clip.clip_path or not os.path.exists(clip.clip_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found")
+    else:
+        file_path = clip.clip_path
 
-    file_size = os.path.getsize(clip.clip_path)
+    file_size = os.path.getsize(file_path)
 
     # Parse Range header for seek support
     range_header = request.headers.get("Range")
@@ -372,7 +378,7 @@ async def stream_clip(
                 yield data
 
     return StreamingResponse(
-        iterfile(clip.clip_path, start, end),
+        iterfile(file_path, start, end),
         status_code=http_status,
         media_type="video/mp4",
         headers={

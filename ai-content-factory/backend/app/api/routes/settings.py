@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db
@@ -47,6 +48,7 @@ class CropConfigUpdate(BaseModel):
 
 class DetectFacecamRequest(BaseModel):
     video_id: str
+    start_offset_seconds: float = 0.0  # skip intro
 
 
 class PreviewCropRequest(BaseModel):
@@ -87,6 +89,23 @@ async def _get_or_create_config(
     return config
 
 
+async def _verify_channel_ownership(
+    channel_id: str, user_id: uuid.UUID, db: AsyncSession
+):
+    """Return the YoutubeAccount row if user owns this channel, else raise 403."""
+    from app.models.video import YoutubeAccount  # avoid circular import
+    result = await db.execute(
+        select(YoutubeAccount).where(
+            YoutubeAccount.channel_id == channel_id,
+            YoutubeAccount.user_id == user_id,
+        )
+    )
+    yt_account = result.scalars().first()
+    if not yt_account:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Channel not found")
+    return yt_account
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/channel/{channel_id}/crop-config", response_model=CropConfigOut)
@@ -96,12 +115,8 @@ async def get_crop_config(
     db: AsyncSession = Depends(get_db),
 ) -> CropConfigOut:
     """Get channel vertical crop configuration."""
-    # Verify user owns this channel
-    yt_account = next(
-        (a for a in current_user.youtube_accounts if a.channel_id == channel_id), None
-    )
-    if not yt_account:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Channel not found")
+    yt_account = await _verify_channel_ownership(channel_id, current_user.id, db)
+
 
     config = await _get_or_create_config(channel_id, yt_account.id, db)
     profiles_result = await db.execute(
@@ -145,11 +160,7 @@ async def update_crop_config(
     db: AsyncSession = Depends(get_db),
 ) -> CropConfigOut:
     """Update channel default crop configuration."""
-    yt_account = next(
-        (a for a in current_user.youtube_accounts if a.channel_id == channel_id), None
-    )
-    if not yt_account:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Channel not found")
+    yt_account = await _verify_channel_ownership(channel_id, current_user.id, db)
 
     config = await _get_or_create_config(channel_id, yt_account.id, db)
 
@@ -174,11 +185,7 @@ async def detect_facecam(
     Run facecam auto-detection on a video.
     Returns detected region + suggested crop config for user to confirm.
     """
-    yt_account = next(
-        (a for a in current_user.youtube_accounts if a.channel_id == channel_id), None
-    )
-    if not yt_account:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Channel not found")
+    await _verify_channel_ownership(channel_id, current_user.id, db)
 
     # Load video file path
     from app.models.video import Video
@@ -193,7 +200,7 @@ async def detect_facecam(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
 
     detector = FacecamDetector()
-    region = detector.detect_facecam_region(video.file_path)
+    region = detector.detect_facecam_region(video.file_path, start_offset=body.start_offset_seconds)
 
     if not region:
         return {
@@ -227,11 +234,7 @@ async def preview_crop(
     Generate a preview frame showing how the crop will look.
     Returns base64-encoded JPEG image.
     """
-    yt_account = next(
-        (a for a in current_user.youtube_accounts if a.channel_id == channel_id), None
-    )
-    if not yt_account:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Channel not found")
+    await _verify_channel_ownership(channel_id, current_user.id, db)
 
     from app.models.video import Video
     result = await db.execute(
@@ -272,6 +275,21 @@ async def preview_crop(
             x_offset = body.crop_x_offset
             x = max(0, x_offset) if anchor == "left" else max(0, source_w - crop_w - x_offset)
             vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=270:480"
+        elif body.vertical_crop_mode == "center_crop":
+            x = (source_w - crop_w) // 2
+            vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=270:480"
+        elif body.vertical_crop_mode == "blur_letterbox":
+            # Preview: blur bg + 200% zoom (540px wide) centered on 270x480 canvas
+            # Left/right overflow auto-cropped by canvas bounds, blur fills top/bottom
+            vf = (
+                "split=2[bg][fg];"
+                "[bg]scale=270:480:force_original_aspect_ratio=increase,"
+                "crop=270:480,"
+                "boxblur=luma_radius=20:luma_power=3:chroma_radius=20:chroma_power=3,"
+                "colorchannelmixer=rr=0.82:gg=0.82:bb=0.82[blurred];"
+                "[fg]scale=540:-2[big];"
+                "[blurred][big]overlay=(W-w)/2:(H-h)/2"
+            )
         else:
             # blur_pillarbox preview
             vf = (

@@ -17,6 +17,8 @@ CROP_MODE_ENUM = Enum(
     "smart_offset",
     "dual_zone",
     "passthrough",
+    "center_crop",
+    "blur_letterbox",
     name="vertical_crop_mode",
 )
 

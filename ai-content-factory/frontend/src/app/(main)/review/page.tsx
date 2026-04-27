@@ -208,17 +208,27 @@ export default function ReviewPage() {
   const [videoDuration, setVideoDuration] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [streamToken, setStreamToken] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
+  // Fetch stream token whenever clip changes
   useEffect(() => {
-    if (!activeClip?.id) { setStreamUrl(null); return; }
+    if (!activeClip?.id) { setStreamToken(null); setStreamUrl(null); return; }
     let cancelled = false;
     setCurrentTime(0); setVideoDuration(0); setIsPlaying(false);
     clipsApi.getStreamToken(activeClip.id)
-      .then((res) => { if (!cancelled) setStreamUrl(clipsApi.streamUrl(activeClip.id, res.data.token)); })
-      .catch(() => { if (!cancelled) setStreamUrl(null); });
+      .then((res) => { if (!cancelled) setStreamToken(res.data.token); })
+      .catch(() => { if (!cancelled) { setStreamToken(null); setStreamUrl(null); } });
     return () => { cancelled = true; };
   }, [activeClip?.id]);
+
+  // Rebuild stream URL whenever token or format changes
+  useEffect(() => {
+    if (!activeClip?.id || !streamToken) { setStreamUrl(null); return; }
+    const fmt = formatMode === "9:16" ? "vertical" : undefined;
+    setStreamUrl(clipsApi.streamUrl(activeClip.id, streamToken, fmt));
+    setCurrentTime(0); setVideoDuration(0); setIsPlaying(false);
+  }, [activeClip?.id, streamToken, formatMode]);
 
   useEffect(() => {
     if (!reviewActiveClipId && sortedFilteredClips.length > 0) {
