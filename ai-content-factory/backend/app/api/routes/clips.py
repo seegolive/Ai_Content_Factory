@@ -286,6 +286,19 @@ async def publish_clip(
         )
 
 
+@router.delete("/clips/{clip_id}/publish-status", status_code=status.HTTP_200_OK)
+async def reset_publish_status(
+    clip_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear platform_status so the clip can be published again."""
+    clip = await _get_clip_or_404(clip_id, current_user.id, db)
+    clip.platform_status = {}
+    await db.commit()
+    return {"ok": True}
+
+
 @router.get("/clips/{clip_id}/stream-token")
 async def get_stream_token(
     clip_id: uuid.UUID,

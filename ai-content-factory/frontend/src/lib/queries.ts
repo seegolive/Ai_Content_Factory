@@ -198,6 +198,17 @@ export function usePublishClip() {
   });
 }
 
+export function useResetPublishStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (clipId: string) => clipsApi.resetPublishStatus(clipId).then((r) => r.data),
+    onSuccess: (_, clipId) => {
+      qc.invalidateQueries({ queryKey: ["clip", clipId] });
+      qc.invalidateQueries({ queryKey: ["clipPublishStatus", clipId] });
+    },
+  });
+}
+
 export function useYoutubeStats() {
   return useQuery({
     queryKey: ["youtubeStats"],

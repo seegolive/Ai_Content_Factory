@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Youtube, Globe, Lock, EyeOff, Check, Loader2, AlertTriangle, ExternalLink, Hash, Tag, FileText, Type, ChevronDown } from "lucide-react";
-import { useClip, useClipPublishStatus, useSavePublishSettings, usePublishClip } from "@/lib/queries";
+import { useClip, useClipPublishStatus, useSavePublishSettings, usePublishClip, useResetPublishStatus } from "@/lib/queries";
 import { clipsApi } from "@/lib/api";
 
 type Privacy = "public" | "unlisted" | "private";
@@ -51,6 +51,7 @@ export default function PublishPage() {
 
   const { mutateAsync: saveSettings, isPending: saving } = useSavePublishSettings();
   const { mutateAsync: publishClip } = usePublishClip();
+  const { mutateAsync: resetPublishStatus, isPending: resetting } = useResetPublishStatus();
   const { data: publishStatus } = useClipPublishStatus(clipId, pollEnabled);
 
   // Populate form from clip data
@@ -147,7 +148,11 @@ export default function PublishPage() {
   const isFailed = ytStatus?.status === "failed";
   const isUploading = publishing || ytStatus?.status === "uploading";
 
-  const streamUrl = streamToken ? clipsApi.streamUrl(clipId, streamToken) : null;
+  // Prefer vertical (9:16) for publish preview — that's what gets uploaded to Shorts
+  const hasVertical = !!clip.clip_path_vertical || !!clip.format_generated?.vertical;
+  const streamUrl = streamToken
+    ? clipsApi.streamUrl(clipId, streamToken, hasVertical ? "vertical" : undefined)
+    : null;
   const thumbUrl = clip.thumbnail_path
     ? `/api/v1${clip.thumbnail_path.startsWith("/") ? clip.thumbnail_path : "/" + clip.thumbnail_path}`
     : undefined;
@@ -366,6 +371,20 @@ export default function PublishPage() {
                 <><Youtube size={14} /> Publish to YouTube</>
               )}
             </button>
+            {isPublished && (
+              <button
+                className="publish-reset-btn"
+                onClick={async () => {
+                  await resetPublishStatus(clipId);
+                  setPollEnabled(false);
+                  setPublishing(false);
+                }}
+                disabled={resetting}
+              >
+                {resetting ? <Loader2 size={14} className="spin" /> : null}
+                Publish Again
+              </button>
+            )}
           </div>
 
           {isPublished && ytStatus?.video_id && (

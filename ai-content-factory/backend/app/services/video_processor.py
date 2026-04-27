@@ -125,25 +125,43 @@ class VideoProcessorService:
         start_time: float,
         end_time: float,
     ) -> str:
-        """Cut clip segment from video using FFmpeg with CUDA/NVENC acceleration."""
+        """Cut clip segment from video.
+
+        Strategy (fastest first):
+          1. Stream copy — no re-encode, nearly instant (<1s per clip)
+          2. NVENC re-encode fallback — if stream copy produces corrupt output
+          3. CPU (libx264) — last resort
+        """
+        # Stream copy: fastest possible cut, no GPU/CPU encode needed
+        cmd_copy = [
+            "ffmpeg", "-y",
+            "-ss", str(start_time), "-to", str(end_time),
+            "-i", input_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        try:
+            await self._run_ffmpeg(cmd_copy)
+            return output_path
+        except VideoProcessingError as e:
+            logger.warning(f"Stream copy cut failed, falling back to re-encode: {e}")
+
+        # Re-encode fallback (needed if source has no keyframes near cut point)
         source_height = await _get_video_height(input_path)
         params = get_encode_params(source_height)
         encoder = get_encoder()
 
-        hw_accel = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] if encoder in ("av1_nvenc", "h264_nvenc") else []
         cmd = (
-            ["ffmpeg", "-y"]
-            + hw_accel
-            + ["-ss", str(start_time), "-to", str(end_time), "-i", input_path]
+            ["ffmpeg", "-y", "-ss", str(start_time), "-to", str(end_time), "-i", input_path]
             + build_video_encode_flags(encoder, params)
             + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
         )
-
         try:
             await self._run_ffmpeg(cmd)
         except VideoProcessingError as e:
-            if encoder in ("av1_nvenc", "h264_nvenc") and ("cuda" in str(e).lower() or "nvenc" in str(e).lower()):
-                logger.warning(f"NVENC encoding failed, falling back to libx264: {e}")
+            if encoder in ("av1_nvenc", "h264_nvenc"):
+                logger.warning(f"NVENC cut failed, falling back to libx264: {e}")
                 cmd_cpu = (
                     ["ffmpeg", "-y", "-ss", str(start_time), "-to", str(end_time), "-i", input_path]
                     + build_cpu_encode_flags(params)

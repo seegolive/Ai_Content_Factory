@@ -129,6 +129,9 @@ export const clipsApi = {
   publish: (clipId: string, platforms: string[], youtube_account_id?: string, privacy?: string) =>
     api.post(`/clips/${clipId}/publish`, { platforms, youtube_account_id, privacy: privacy ?? "unlisted" }),
 
+  resetPublishStatus: (clipId: string) =>
+    api.delete<{ ok: boolean }>(`/clips/${clipId}/publish-status`),
+
   /** Fetch a short-lived (1h) signed token for streaming a clip file.
    *  Use the returned token as ?token= in streamUrl(). */
   getStreamToken: (clipId: string) =>

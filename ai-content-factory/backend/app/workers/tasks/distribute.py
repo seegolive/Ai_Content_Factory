@@ -87,8 +87,11 @@ def distribute_clip(self, clip_id: str, platforms: List[str], youtube_account_id
                             upload_tags = ps.get("hashtags") or clip.hashtags or []
                             upload_privacy = resolved_privacy
 
+                            # Prefer vertical (9:16) for YouTube Shorts upload
+                            upload_path = clip.clip_path_vertical or clip.clip_path
+
                             youtube_id = await yt_service.upload_video(
-                                clip_path=clip.clip_path,
+                                clip_path=upload_path,
                                 title=upload_title,
                                 description=upload_description,
                                 tags=upload_tags,
