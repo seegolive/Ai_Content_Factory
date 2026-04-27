@@ -263,7 +263,7 @@ export default function AnalyticsPage() {
                         <div key={v.video_id} className="analytics-top-row">
                           <div className="analytics-top-rank">#{i + 1}</div>
                           {v.thumbnail_url && (
-                            <img className="analytics-thumb" src={v.thumbnail_url} alt="" />
+                            <Image className="analytics-thumb" src={v.thumbnail_url} alt="" width={48} height={27} />
                           )}
                           <div className="analytics-top-title">{v.title}</div>
                           <div className="analytics-top-views">
@@ -281,7 +281,7 @@ export default function AnalyticsPage() {
                   <div className="analytics-upgrade-icon">
                     <BarChart2 size={18} />
                   </div>
-                  <div>
+                  <div className="analytics-upgrade-text">
                     <div className="analytics-upgrade-title">Unlock Time-Series Analytics</div>
                     <div className="analytics-upgrade-desc">
                       Add <code style={{ fontSize: 11, background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: 3 }}>yt-analytics.readonly</code> scope

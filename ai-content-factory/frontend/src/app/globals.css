@@ -1998,6 +1998,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
 }
 .analytics-upgrade-icon {
   width: 40px;
@@ -2020,9 +2021,13 @@ kbd {
   color: var(--text-3);
   margin-top: 3px;
   line-height: 1.5;
+  word-break: break-word;
+}
+.analytics-upgrade-text {
+  flex: 1;
+  min-width: 0;
 }
 .analytics-upgrade-btn {
-  margin-left: auto;
   flex-shrink: 0;
   padding: 8px 16px;
   background: var(--primary);
@@ -2033,6 +2038,7 @@ kbd {
   font-weight: 600;
   cursor: pointer;
   transition: opacity 0.15s;
+  white-space: nowrap;
 }
 .analytics-upgrade-btn:hover { opacity: 0.85; }
 
