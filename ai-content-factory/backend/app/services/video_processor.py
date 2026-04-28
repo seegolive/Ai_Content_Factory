@@ -56,7 +56,12 @@ def _test_nvenc_encoder(codec: str) -> bool:
 
 
 def _detect_best_encoder() -> str:
-    """Detect best available encoder: av1_nvenc > h264_nvenc > libx264."""
+    """Detect best available encoder: h264_nvenc > libx264.
+
+    AV1 (av1_nvenc) is intentionally skipped: clips must be playable in all
+    browsers via the <video> element, and AV1 hardware decode support is not
+    guaranteed across browsers / OS combinations.  H.264 has universal support.
+    """
     try:
         result = subprocess.run(
             ["ffmpeg", "-encoders", "-hide_banner"],
@@ -65,10 +70,7 @@ def _detect_best_encoder() -> str:
             timeout=10,
         )
         encoders = result.stdout
-        # Prefer AV1 NVENC (RTX 40xx) — smaller files, better quality
-        if "av1_nvenc" in encoders and _test_nvenc_encoder("av1_nvenc"):
-            return "av1_nvenc"
-        # Fall back to H.264 NVENC
+        # H.264 NVENC — GPU-accelerated, universally browser-compatible
         if "h264_nvenc" in encoders and _test_nvenc_encoder("h264_nvenc"):
             return "h264_nvenc"
         return "libx264"
