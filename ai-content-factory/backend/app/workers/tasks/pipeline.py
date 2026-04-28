@@ -428,18 +428,33 @@ async def _stage_ai_analysis(video, db):
     brain = AIBrainService()
     analysis = await brain.analyze_transcript(transcript)
 
-    # Validate and filter clips by duration rules
-    valid_clips, rejected_clips = _validate_clip_durations(
-        analysis.clips, video.duration_seconds or 0
+    # Layer 2: Validate and adjust clips (extend/pass/split/reject)
+    from app.workers.tasks.pipeline_validator import validate_and_adjust_clips
+
+    valid_clips, action_log = validate_and_adjust_clips(
+        clips=analysis.clips,
+        video_duration=video.duration_seconds or 0,
+        transcript_segments=segments,
     )
-    if rejected_clips:
+
+    rejected_count = sum(1 for e in action_log if e.get("action") == "REJECTED")
+    if rejected_count:
         logger.warning(
-            f"[Pipeline] {len(rejected_clips)} clips rejected by duration validation: "
-            + ", ".join(
-                f"{c.moment_type}({c.end_time - c.start_time:.0f}s)"
-                for c in rejected_clips
-            )
+            f"[Pipeline] {rejected_count} clips rejected by Layer 2 validator"
         )
+
+    # Store action_log in video.processing_log if column exists
+    if hasattr(video, "processing_log"):
+        import json as _json
+
+        existing_log = video.processing_log or {}
+        if isinstance(existing_log, str):
+            try:
+                existing_log = _json.loads(existing_log)
+            except Exception:
+                existing_log = {}
+        existing_log["layer2_validation"] = action_log
+        video.processing_log = existing_log
 
     # Store valid clip suggestions in DB
     from app.models.clip import Clip
@@ -467,7 +482,7 @@ async def _stage_ai_analysis(video, db):
     video.ai_provider_used = analysis.provider_used
     logger.info(
         f"AI analysis done via {analysis.provider_used} "
-        f"({len(valid_clips)} valid clips, {len(rejected_clips)} rejected, "
+        f"({len(valid_clips)} valid clips, {rejected_count} rejected, "
         f"{analysis.tokens_used} tokens)"
     )
     await db.commit()

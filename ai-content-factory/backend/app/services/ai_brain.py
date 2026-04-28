@@ -118,18 +118,21 @@ def _build_provider_chain() -> list:
             "base_url": settings.GROQ_BASE_URL,
             "api_key": settings.GROQ_API_KEY,
             "model": settings.GROQ_MODEL,
+            "supports_json_mode": True,
         },
         {
             "name": "OpenRouter Gemini Flash",
             "base_url": settings.OPENROUTER_BASE_URL,
             "api_key": settings.OPENROUTER_API_KEY,
             "model": settings.OPENROUTER_MODEL,
+            "supports_json_mode": False,  # Gemini via OpenRouter tidak konsisten
         },
         {
             "name": "OpenRouter GPT-4o-mini",
             "base_url": settings.OPENROUTER_BASE_URL,
             "api_key": settings.OPENROUTER_API_KEY,
             "model": settings.OPENROUTER_FALLBACK_MODEL,
+            "supports_json_mode": True,
         },
     ]
 
@@ -255,17 +258,18 @@ class AIBrainService:
                 "HTTP-Referer": "https://ai-content-factory.app",
                 "X-Title": "AI Content Factory",
             },
-            timeout=90.0,
+            timeout=120.0,
         ) as client:
-            resp = await client.post(
-                "/chat/completions",
-                json={
-                    "model": provider["model"],
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "response_format": {"type": "json_object"},
-                },
-            )
+            payload: dict = {
+                "model": provider["model"],
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.7,
+            }
+            # Only add response_format for providers that reliably support it
+            if provider.get("supports_json_mode", False):
+                payload["response_format"] = {"type": "json_object"}
+            resp = await client.post("/chat/completions", json=payload)
             resp.raise_for_status()
             data = resp.json()
             return {
@@ -308,9 +312,12 @@ class AIBrainService:
                     f"{provider['name']} HTTP {status} — trying next provider"
                 )
                 last_error = e
-                # 413 = payload too large → try next provider (may have higher limit)
-                # 4xx auth/not-found errors (except 413/429) → stop immediately
-                if status not in (413, 429, 500, 502, 503, 504):
+                # 401/403 = auth error for this provider → try next (key may be expired)
+                # 413 = payload too large → try next (other provider may have higher limit)
+                # 429 = rate limit → try next
+                # 5xx = server errors → try next
+                SKIP_TO_NEXT = {401, 403, 413, 429, 500, 502, 503, 504}
+                if status not in SKIP_TO_NEXT:
                     break
             except (httpx.TimeoutException, httpx.ConnectError) as e:
                 logger.warning(
@@ -330,22 +337,11 @@ class AIBrainService:
         """Analyze transcript and return viral clip suggestions."""
         start = time.perf_counter()
 
-        # Build segments text — cap at ~70k chars to stay within provider context limits.
-        # For very long videos (streams, etc.) sample across the full duration instead of truncating.
+        # Build segments text — smart chunk sampling to preserve burst moments.
         MAX_SEGMENTS_CHARS = 70_000
-        all_segments_lines = [
-            f"[{seg.start:.1f}s - {seg.end:.1f}s]: {seg.text}"
-            for seg in transcript.segments
-        ]
-        segments_text = "\n".join(all_segments_lines)
-        if len(segments_text) > MAX_SEGMENTS_CHARS:
-            # Sample uniformly across segments to preserve context from whole video
-            total = len(all_segments_lines)
-            step = max(1, total // 800)  # keep ~800 lines
-            sampled = all_segments_lines[::step]
-            segments_text = "[NOTE: transcript sampled uniformly due to length]\n" + "\n".join(sampled)
-            # Final safety truncate
-            segments_text = segments_text[:MAX_SEGMENTS_CHARS]
+        segments_text = self._smart_sample_segments(
+            transcript.segments, MAX_SEGMENTS_CHARS
+        )
 
         context_parts = []
         if game_title:
@@ -357,18 +353,17 @@ class AIBrainService:
 
         context_block = "\n".join(context_parts)
 
+        max_tokens = self._calc_max_tokens(transcript.duration)
+
         user_message = f"""Analisis transcript video gaming ini dan identifikasi momen-momen viral.
 
-Video duration: {transcript.duration:.1f} detik
+Video duration: {transcript.duration:.1f} detik ({transcript.duration/60:.1f} menit)
 Language: {transcript.language}
 Word count: {transcript.word_count}
 {context_block}
 
 TRANSCRIPT:
 {segments_text}
-
-Full text:
-{transcript.full_text[:5000]}
 """
 
         messages = [
@@ -381,7 +376,7 @@ Full text:
             provider_name,
             model_used,
             tokens_used,
-        ) = await self._call_with_fallback(messages, max_tokens=4000)
+        ) = await self._call_with_fallback(messages, max_tokens=max_tokens)
 
         # If JSON is malformed, retry once with explicit instruction
         clips_data = self._try_parse_clips(content)
@@ -401,7 +396,7 @@ Full text:
                 provider_name,
                 model_used,
                 tokens_used,
-            ) = await self._call_with_fallback(messages, max_tokens=4000)
+            ) = await self._call_with_fallback(messages, max_tokens=max_tokens)
             clips_data = self._try_parse_clips(content)
 
         elapsed = time.perf_counter() - start
@@ -448,6 +443,53 @@ Full text:
             logger.warning(f"generate_titles failed: {e}")
             return [clip_info.get("title", "Untitled")]
 
+    def _smart_sample_segments(self, segments: list, max_chars: int = 70_000) -> str:
+        """Chunk-based sampling: divide video into 30 time chunks, sample from each.
+
+        Unlike uniform step sampling, this preserves burst moments (kill streaks,
+        clutch plays) that happen in short windows of time.
+        """
+        all_lines = [
+            f"[{seg.start:.1f}s - {seg.end:.1f}s]: {seg.text}"
+            for seg in segments
+        ]
+        full = "\n".join(all_lines)
+        if len(full) <= max_chars:
+            return full
+
+        # Divide into 30 time-based chunks
+        total_dur = segments[-1].end if segments else 1
+        num_chunks = 30
+        chunk_dur = total_dur / num_chunks
+        chunks: list = [[] for _ in range(num_chunks)]
+
+        for seg, line in zip(segments, all_lines):
+            idx = min(int(seg.start / chunk_dur), num_chunks - 1)
+            chunks[idx].append(line)
+
+        budget = max_chars // num_chunks
+        sampled = []
+        for chunk_lines in chunks:
+            chunk_text = "\n".join(chunk_lines)
+            if len(chunk_text) <= budget:
+                sampled.append(chunk_text)
+            else:
+                step = max(1, len(chunk_lines) // max(1, budget // 80))
+                sampled.append("\n".join(chunk_lines[::step]))
+
+        note = (
+            f"[transcript sampled per {chunk_dur/60:.1f}min chunk "
+            f"dari video {total_dur/60:.0f} menit]\n"
+        )
+        result = note + "\n---\n".join(sampled)
+        return result[:max_chars]
+
+    def _calc_max_tokens(self, duration_sec: float) -> int:
+        """Scale max_tokens based on video duration to fit more clips for longer videos."""
+        minutes = duration_sec / 60
+        clips_est = min(25, max(5, int(minutes / 10)))
+        return min(8000, max(3000, clips_est * 350 + 1000))
+
     def _try_parse_clips(self, content: str) -> Optional[dict]:
         """Try to parse JSON from response. Returns dict or None."""
         try:
@@ -464,56 +506,70 @@ Full text:
     def _parse_clip_suggestions(self, data: dict) -> List[ClipSuggestion]:
         """Parse dict into ClipSuggestion objects, sorted by viral_score desc.
 
-        Layer 2 validation: reject clips outside YouTube Shorts duration range.
+        Layer 1 parser — NO duration filtering here.
+        All clips passed through to Layer 2 (pipeline_validator) which handles
+        extend/pass/split/reject based on YouTube Shorts requirements.
+        Only rejects malformed items (missing fields, invalid types).
         """
+        VALID_TYPES = {"clutch", "funny", "achievement", "rage", "epic", "fail", "tutorial"}
         clips = []
-        too_long = 0
-        too_short_warn = 0
+        skipped = 0
         for item in data.get("clips", []):
             try:
                 start = float(item["start_time"])
                 end = float(item["end_time"])
+                if end <= start:
+                    logger.warning(f"Skipping clip: end <= start ({start}-{end})")
+                    skipped += 1
+                    continue
+
+                # Normalize moment_type
+                mt = item.get("moment_type", "epic")
+                if mt not in VALID_TYPES:
+                    mt = "epic"
+
+                # Ensure exactly 3 titles
+                titles = item.get("titles", [item.get("title", "Untitled")])
+                if not isinstance(titles, list):
+                    titles = [str(titles)]
+                while len(titles) < 3:
+                    titles.append(titles[0])
+                titles = titles[:3]
+
+                # Clean hashtags
+                tags = [
+                    h.lstrip("#").strip().lower()
+                    for h in item.get("hashtags", [])
+                    if h and isinstance(h, str)
+                ]
+
+                # Clamp viral_score
+                score = max(0, min(100, int(item.get("viral_score", 50))))
+
                 duration = end - start
-                # Hard reject only clips > 180s (YouTube Shorts hard limit).
-                # Clips < 60s are passed through — pipeline._validate_clip_durations
-                # will extend them before the final cut. Only truly unsalvageable
-                # clips (< 20s) are rejected here to avoid wasting pipeline time.
-                if duration > SHORTS_MAX_DURATION:
-                    too_long += 1
-                    logger.debug(
-                        f"Clip rejected: too long ({duration:.1f}s > {SHORTS_MAX_DURATION}s)"
-                    )
-                    continue
-                if duration < 20:
-                    too_short_warn += 1
-                    logger.debug(
-                        f"Clip rejected: too short to salvage ({duration:.1f}s)"
-                    )
-                    continue
-                if duration < SHORTS_MIN_DURATION:
-                    logger.debug(
-                        f"Clip under-duration ({duration:.1f}s) — passing to pipeline for extension"
-                    )
+                logger.debug(
+                    f"Layer1 clip: {mt} {start:.0f}s-{end:.0f}s ({duration:.0f}s) score={score}"
+                )
+
                 clips.append(
                     ClipSuggestion(
                         start_time=start,
                         end_time=end,
-                        viral_score=int(item.get("viral_score", 50)),
-                        moment_type=item.get("moment_type", "epic"),
-                        titles=item.get("titles", [item.get("title", "Untitled")]),
-                        hook_text=item.get("hook_text", ""),
-                        description=item.get("description", ""),
-                        hashtags=item.get("hashtags", []),
+                        viral_score=score,
+                        moment_type=mt,
+                        titles=titles,
+                        hook_text=item.get("hook_text", "")[:200],
+                        description=item.get("description", "")[:1000],
+                        hashtags=tags[:15],
                         thumbnail_prompt=item.get("thumbnail_prompt", ""),
-                        reason=item.get("reason", ""),
+                        reason=item.get("reason", "")[:300],
                     )
                 )
             except (KeyError, ValueError, TypeError) as e:
                 logger.warning(f"Skipping malformed clip item: {e}")
-        skipped = too_long + too_short_warn
-        if skipped:
-            logger.info(
-                f"Duration filter: {too_short_warn} unsalvageable (<20s), "
-                f"{too_long} too long (>{SHORTS_MAX_DURATION}s) — total skipped: {skipped}"
-            )
+                skipped += 1
+
+        logger.info(
+            f"Layer 1 parsed: {len(clips)} raw moments detected, {skipped} malformed skipped"
+        )
         return sorted(clips, key=lambda c: c.viral_score, reverse=True)
