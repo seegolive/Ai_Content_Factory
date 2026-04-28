@@ -104,8 +104,8 @@ export function VideoPerformanceTable({ channelId }: Props) {
               </tr>
             </thead>
             <tbody>
-              {videos.map((v, i) => (
-                <VideoRow key={v.video_id ?? v.youtube_video_id ?? i} video={v} maxViews={maxViews} />
+              {videos.map((v) => (
+                <VideoRow key={v.video_id} video={v} maxViews={maxViews} />
               ))}
             </tbody>
           </table>
