@@ -1,9 +1,17 @@
 """ChannelCropConfig and GameCropProfile models for facecam-aware vertical crop."""
+
 import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, UniqueConstraint,
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -40,7 +48,9 @@ class ChannelCropConfig(Base):
 
     __tablename__ = "channel_crop_configs"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     youtube_account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("youtube_accounts.id", ondelete="CASCADE"),
@@ -51,7 +61,9 @@ class ChannelCropConfig(Base):
 
     # OBS canvas specs — Seego GG: 2560x1440 @60fps
     obs_canvas_width: Mapped[int] = mapped_column(Integer, default=2560, nullable=False)
-    obs_canvas_height: Mapped[int] = mapped_column(Integer, default=1440, nullable=False)
+    obs_canvas_height: Mapped[int] = mapped_column(
+        Integer, default=1440, nullable=False
+    )
     obs_fps: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
 
     # Default crop mode (used for unknown games)
@@ -65,7 +77,9 @@ class ChannelCropConfig(Base):
     )
 
     # Default smart_offset params
-    default_crop_x_offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    default_crop_x_offset: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
     default_crop_anchor: Mapped[str] = mapped_column(
         CROP_ANCHOR_ENUM, default="left", nullable=False
     )
@@ -79,7 +93,10 @@ class ChannelCropConfig(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     # Relationships
@@ -96,10 +113,14 @@ class GameCropProfile(Base):
     __tablename__ = "game_crop_profiles"
 
     __table_args__ = (
-        UniqueConstraint("channel_id", "game_name", name="uq_game_profile_channel_game"),
+        UniqueConstraint(
+            "channel_id", "game_name", name="uq_game_profile_channel_game"
+        ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     channel_crop_config_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("channel_crop_configs.id", ondelete="CASCADE"),
@@ -126,10 +147,14 @@ class GameCropProfile(Base):
 
     # Smart offset params
     crop_x_offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    crop_anchor: Mapped[str] = mapped_column(CROP_ANCHOR_ENUM, default="left", nullable=False)
+    crop_anchor: Mapped[str] = mapped_column(
+        CROP_ANCHOR_ENUM, default="left", nullable=False
+    )
 
     # Dual zone params
-    dual_zone_split_ratio: Mapped[float] = mapped_column(Float, default=0.38, nullable=False)
+    dual_zone_split_ratio: Mapped[float] = mapped_column(
+        Float, default=0.38, nullable=False
+    )
     gameplay_crop_center_x: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -138,7 +163,10 @@ class GameCropProfile(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     # Relationship
@@ -159,8 +187,12 @@ def seed_default_game_profiles(config: ChannelCropConfig) -> list[GameCropProfil
             game_name_aliases=["BF6", "Battlefield VI", "Battlefield"],
             vertical_crop_mode="smart_offset",
             facecam_position="top_left",
-            facecam_x=0, facecam_y=0, facecam_width=320, facecam_height=270,
-            crop_x_offset=0, crop_anchor="left",
+            facecam_x=0,
+            facecam_y=0,
+            facecam_width=320,
+            facecam_height=270,
+            crop_x_offset=0,
+            crop_anchor="left",
         ),
         GameCropProfile(
             channel_crop_config_id=cfg_id,
@@ -169,7 +201,10 @@ def seed_default_game_profiles(config: ChannelCropConfig) -> list[GameCropProfil
             game_name_aliases=["VALORANT", "Val"],
             vertical_crop_mode="dual_zone",
             facecam_position="top_center_full",
-            facecam_x=0, facecam_y=0, facecam_width=2560, facecam_height=547,
+            facecam_x=0,
+            facecam_y=0,
+            facecam_width=2560,
+            facecam_height=547,
             dual_zone_split_ratio=0.38,
             gameplay_crop_center_x=1280,
         ),
@@ -180,7 +215,8 @@ def seed_default_game_profiles(config: ChannelCropConfig) -> list[GameCropProfil
             game_name_aliases=["ArcRaiders"],
             vertical_crop_mode="smart_offset",
             facecam_position="top_left",
-            crop_x_offset=0, crop_anchor="left",
+            crop_x_offset=0,
+            crop_anchor="left",
         ),
         GameCropProfile(
             channel_crop_config_id=cfg_id,
@@ -189,7 +225,8 @@ def seed_default_game_profiles(config: ChannelCropConfig) -> list[GameCropProfil
             game_name_aliases=["KCD2", "Kingdom Come 2", "Kingdom Come Deliverance"],
             vertical_crop_mode="smart_offset",
             facecam_position="top_left",
-            crop_x_offset=0, crop_anchor="left",
+            crop_x_offset=0,
+            crop_anchor="left",
         ),
         GameCropProfile(
             channel_crop_config_id=cfg_id,

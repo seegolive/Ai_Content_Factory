@@ -1,9 +1,10 @@
 """Whisper-based local transcription service using faster-whisper."""
+
 import asyncio
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from loguru import logger
 
@@ -59,8 +60,11 @@ class WhisperTranscriptionService:
             logger.info("Whisper model loaded successfully.")
         except RuntimeError as e:
             if "CUDA" in str(e) or "cuda" in str(e):
-                logger.warning(f"CUDA unavailable ({e}), falling back to CPU with medium model")
+                logger.warning(
+                    f"CUDA unavailable ({e}), falling back to CPU with medium model"
+                )
                 from faster_whisper import WhisperModel
+
                 WhisperTranscriptionService._model = WhisperModel(
                     "medium",
                     device="cpu",
@@ -69,7 +73,12 @@ class WhisperTranscriptionService:
             else:
                 raise
 
-    def _transcribe_sync(self, video_path: str, language: Optional[str]) -> TranscriptResult:
+    def _transcribe_sync(
+        self,
+        video_path: str,
+        language: Optional[str],
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> TranscriptResult:
         """Run synchronous transcription (called in thread pool)."""
         model = WhisperTranscriptionService._model
         if model is None:
@@ -85,6 +94,8 @@ class WhisperTranscriptionService:
 
         segments: List[TranscriptSegment] = []
         full_texts: List[str] = []
+        total_duration = float(info.duration) if info.duration else 0.0
+        last_reported_pct = -1
 
         for i, seg in enumerate(segments_iter):
             confidence = float(getattr(seg, "avg_logprob", 0.0))
@@ -99,6 +110,17 @@ class WhisperTranscriptionService:
             )
             full_texts.append(seg.text.strip())
 
+            # Emit progress every 2% to avoid flooding DB
+            if progress_callback and total_duration > 0:
+                pct = int(float(seg.end) / total_duration * 100)
+                pct = min(pct, 99)  # never report 100 until fully done
+                if pct >= last_reported_pct + 2:
+                    last_reported_pct = pct
+                    try:
+                        progress_callback(pct)
+                    except Exception:
+                        pass  # non-critical
+
         full_text = " ".join(full_texts)
 
         return TranscriptResult(
@@ -109,12 +131,18 @@ class WhisperTranscriptionService:
             word_count=len(full_text.split()),
         )
 
-    async def transcribe(self, video_path: str, language: Optional[str] = None, _is_retry: bool = False) -> TranscriptResult:
+    async def transcribe(
+        self,
+        video_path: str,
+        language: Optional[str] = None,
+        progress_callback: Optional[Callable[[int], None]] = None,
+        _is_retry: bool = False,
+    ) -> TranscriptResult:
         """Non-blocking transcription using thread pool executor."""
         loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(
-                None, partial(self._transcribe_sync, video_path, language)
+                None, partial(self._transcribe_sync, video_path, language, progress_callback)
             )
             logger.info(
                 f"Transcription complete: {result.word_count} words, "
@@ -122,12 +150,19 @@ class WhisperTranscriptionService:
             )
             return result
         except (MemoryError, RuntimeError) as e:
-            if not _is_retry and ("out of memory" in str(e).lower() or "cuda" in str(e).lower()):
-                logger.error("GPU OOM during transcription — falling back to CPU medium model")
+            if not _is_retry and (
+                "out of memory" in str(e).lower() or "cuda" in str(e).lower()
+            ):
+                logger.error(
+                    "GPU OOM during transcription — falling back to CPU medium model"
+                )
                 from faster_whisper import WhisperModel
+
                 with WhisperTranscriptionService._model_lock:
-                    WhisperTranscriptionService._model = WhisperModel("medium", device="cpu", compute_type="int8")
-                return await self.transcribe(video_path, language, _is_retry=True)
+                    WhisperTranscriptionService._model = WhisperModel(
+                        "medium", device="cpu", compute_type="int8"
+                    )
+                return await self.transcribe(video_path, language, progress_callback, _is_retry=True)
             raise
         except FileNotFoundError:
             raise FileNotFoundError(f"Video file not found: {video_path}")

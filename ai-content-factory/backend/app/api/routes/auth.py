@@ -1,7 +1,6 @@
 """Google OAuth authentication routes."""
+
 import secrets
-import uuid
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
@@ -41,7 +40,10 @@ async def google_callback(
         tokens = await exchange_code_for_tokens(code)
     except Exception as e:
         logger.error(f"Token exchange failed: {e}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth token exchange failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OAuth token exchange failed",
+        )
 
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
@@ -50,7 +52,9 @@ async def google_callback(
         user_info = await get_google_user_info(access_token)
     except Exception as e:
         logger.error(f"Failed to fetch Google user info: {e}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to get user info")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to get user info"
+        )
 
     google_id = user_info.get("sub")
     email = user_info.get("email")
@@ -75,14 +79,15 @@ async def google_callback(
 
     # Upsert YouTube account if we got a refresh token (YouTube scope granted)
     if refresh_token:
-        from app.core.config import settings
         from googleapiclient.discovery import build
         from google.oauth2.credentials import Credentials
 
         try:
             creds = Credentials(token=access_token)
             yt_service = build("youtube", "v3", credentials=creds)
-            channels_response = yt_service.channels().list(part="snippet", mine=True).execute()
+            channels_response = (
+                yt_service.channels().list(part="snippet", mine=True).execute()
+            )
             if channels_response.get("items"):
                 channel = channels_response["items"][0]
                 channel_id = channel["id"]

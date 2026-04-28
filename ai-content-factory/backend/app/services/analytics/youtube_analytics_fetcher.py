@@ -3,11 +3,11 @@
 Fetches channel and video analytics data from YouTube Data API v3
 and YouTube Analytics API. Implements quota management via Redis.
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
@@ -29,6 +29,7 @@ WIB = ZoneInfo("Asia/Jakarta")
 def _parse_iso_duration(duration: str) -> int:
     """Parse ISO 8601 duration (PT1H2M3S) to seconds."""
     import re
+
     pattern = re.compile(
         r"P(?:(?P<days>\d+)D)?T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?"
     )
@@ -52,10 +53,16 @@ class YouTubeAnalyticsFetcher:
     """
 
     QUOTA_KEY_TEMPLATE = "yt_analytics_quota:{channel_id}:{date}"
-    DAILY_QUOTA_LIMIT = 8_000   # hard stop — real limit is 10K
-    REQUEST_INTERVAL = 0.1      # 100ms between requests
+    DAILY_QUOTA_LIMIT = 8_000  # hard stop — real limit is 10K
+    REQUEST_INTERVAL = 0.1  # 100ms between requests
 
-    def __init__(self, access_token: str, refresh_token: str, channel_id: str, redis_client: Any = None):
+    def __init__(
+        self,
+        access_token: str,
+        refresh_token: str,
+        channel_id: str,
+        redis_client: Any = None,
+    ):
         self._access_token = access_token
         self._refresh_token = refresh_token
         self._channel_id = channel_id
@@ -65,6 +72,7 @@ class YouTubeAnalyticsFetcher:
         # They live in app config (env vars), not in the DB.
         try:
             from app.core.config import settings
+
             client_id = settings.GOOGLE_CLIENT_ID
             client_secret = settings.GOOGLE_CLIENT_SECRET
         except Exception:
@@ -79,7 +87,9 @@ class YouTubeAnalyticsFetcher:
             client_secret=client_secret or None,
         )
         self._yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
-        self._yta = build("youtubeAnalytics", "v2", credentials=creds, cache_discovery=False)
+        self._yta = build(
+            "youtubeAnalytics", "v2", credentials=creds, cache_discovery=False
+        )
 
     # ── Quota Management ─────────────────────────────────────────────────────
 
@@ -115,24 +125,30 @@ class YouTubeAnalyticsFetcher:
         try:
             # Step 1: get video IDs via search
             search_response = await self._run_sync(
-                self._yt.search().list(
+                self._yt.search()
+                .list(
                     channelId=self._channel_id,
                     part="id",
                     order="date",
                     maxResults=max_results,
                     type="video",
-                ).execute
+                )
+                .execute
             )
-            video_ids = [item["id"]["videoId"] for item in search_response.get("items", [])]
+            video_ids = [
+                item["id"]["videoId"] for item in search_response.get("items", [])
+            ]
             if not video_ids:
                 return []
 
             # Step 2: get full video details in one batch
             videos_response = await self._run_sync(
-                self._yt.videos().list(
+                self._yt.videos()
+                .list(
                     id=",".join(video_ids),
                     part="id,snippet,contentDetails,statistics",
-                ).execute
+                )
+                .execute
             )
 
             results: list[VideoMetadata] = []
@@ -147,7 +163,9 @@ class YouTubeAnalyticsFetcher:
                         youtube_id=item["id"],
                         title=snippet.get("title", ""),
                         published_at=datetime.fromisoformat(
-                            snippet.get("publishedAt", "2000-01-01T00:00:00Z").replace("Z", "+00:00")
+                            snippet.get("publishedAt", "2000-01-01T00:00:00Z").replace(
+                                "Z", "+00:00"
+                            )
                         ),
                         duration_seconds=duration,
                         views=int(stats.get("viewCount", 0)),
@@ -179,13 +197,15 @@ class YouTubeAnalyticsFetcher:
 
         try:
             response = await self._run_sync(
-                self._yta.reports().query(
+                self._yta.reports()
+                .query(
                     ids=f"channel=={self._channel_id}",
                     startDate=start_date.isoformat(),
                     endDate=end_date.isoformat(),
                     metrics=metrics,
                     filters=f"video=={youtube_video_id}",
-                ).execute
+                )
+                .execute
             )
             rows = response.get("rows")
             if not rows:
@@ -197,11 +217,15 @@ class YouTubeAnalyticsFetcher:
 
             # Traffic sources (separate request)
             await asyncio.sleep(self.REQUEST_INTERVAL)
-            traffic_data = await self._fetch_traffic_sources(youtube_video_id, start_date, end_date)
+            traffic_data = await self._fetch_traffic_sources(
+                youtube_video_id, start_date, end_date
+            )
 
             # Device types (separate request)
             await asyncio.sleep(self.REQUEST_INTERVAL)
-            device_data = await self._fetch_device_types(youtube_video_id, start_date, end_date)
+            device_data = await self._fetch_device_types(
+                youtube_video_id, start_date, end_date
+            )
 
             return VideoAnalyticsData(
                 youtube_video_id=youtube_video_id,
@@ -221,7 +245,9 @@ class YouTubeAnalyticsFetcher:
             )
 
         except HttpError as exc:
-            logger.error(f"[Analytics] fetch_video_analytics({youtube_video_id}) HTTP error: {exc}")
+            logger.error(
+                f"[Analytics] fetch_video_analytics({youtube_video_id}) HTTP error: {exc}"
+            )
             return None
 
     async def _fetch_traffic_sources(
@@ -231,14 +257,16 @@ class YouTubeAnalyticsFetcher:
             return {}
         try:
             response = await self._run_sync(
-                self._yta.reports().query(
+                self._yta.reports()
+                .query(
                     ids=f"channel=={self._channel_id}",
                     startDate=start_date.isoformat(),
                     endDate=end_date.isoformat(),
                     metrics="views",
                     dimensions="insightTrafficSourceType",
                     filters=f"video=={youtube_video_id}",
-                ).execute
+                )
+                .execute
             )
             rows = response.get("rows", [])
             total = sum(r[1] for r in rows) or 1
@@ -253,14 +281,16 @@ class YouTubeAnalyticsFetcher:
             return {}
         try:
             response = await self._run_sync(
-                self._yta.reports().query(
+                self._yta.reports()
+                .query(
                     ids=f"channel=={self._channel_id}",
                     startDate=start_date.isoformat(),
                     endDate=end_date.isoformat(),
                     metrics="views",
                     dimensions="deviceType",
                     filters=f"video=={youtube_video_id}",
-                ).execute
+                )
+                .execute
             )
             rows = response.get("rows", [])
             total = sum(r[1] for r in rows) or 1
@@ -276,14 +306,16 @@ class YouTubeAnalyticsFetcher:
             return []
         try:
             response = await self._run_sync(
-                self._yta.reports().query(
+                self._yta.reports()
+                .query(
                     ids=f"channel=={self._channel_id}",
                     startDate="2020-01-01",
                     endDate=date.today().isoformat(),
                     metrics="audienceWatchRatio,relativeRetentionPerformance",
                     dimensions="elapsedVideoTimeRatio",
                     filters=f"video=={youtube_video_id}",
-                ).execute
+                )
+                .execute
             )
             rows = response.get("rows", [])
             if not rows:
@@ -308,17 +340,21 @@ class YouTubeAnalyticsFetcher:
             return points
 
         except HttpError as exc:
-            logger.warning(f"[Analytics] fetch_retention_curve({youtube_video_id}) HTTP error: {exc}")
+            logger.warning(
+                f"[Analytics] fetch_retention_curve({youtube_video_id}) HTTP error: {exc}"
+            )
             return []
 
     async def _get_video_duration(self, youtube_video_id: str) -> int:
         """Fetch video duration seconds. Used for retention curve timestamp calculation."""
         try:
             response = await self._run_sync(
-                self._yt.videos().list(
+                self._yt.videos()
+                .list(
                     id=youtube_video_id,
                     part="contentDetails",
-                ).execute
+                )
+                .execute
             )
             items = response.get("items", [])
             if items:
@@ -335,13 +371,15 @@ class YouTubeAnalyticsFetcher:
             return []
         try:
             response = await self._run_sync(
-                self._yta.reports().query(
+                self._yta.reports()
+                .query(
                     ids=f"channel=={self._channel_id}",
                     startDate=start_date.isoformat(),
                     endDate=end_date.isoformat(),
                     metrics="views,estimatedMinutesWatched,subscribersGained,subscribersLost",
                     dimensions="day",
-                ).execute
+                )
+                .execute
             )
             rows = response.get("rows", [])
             results: list[DailyStats] = []
@@ -384,7 +422,9 @@ class YouTubeAnalyticsFetcher:
                 if isinstance(result, VideoAnalyticsData):
                     results[vid_id] = result
                 elif isinstance(result, Exception):
-                    logger.warning(f"[Analytics] batch fetch failed for {vid_id}: {result}")
+                    logger.warning(
+                        f"[Analytics] batch fetch failed for {vid_id}: {result}"
+                    )
 
             if progress_callback:
                 progress_callback(min(i + batch_size, total), total)

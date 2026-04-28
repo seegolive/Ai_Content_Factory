@@ -1,9 +1,10 @@
 """Video Pydantic schemas."""
+
 import uuid
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, field_validator
 
 
 class VideoUploadResponse(BaseModel):

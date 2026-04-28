@@ -1,4 +1,6 @@
 """FastAPI application entry point."""
+
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -46,7 +48,9 @@ async def log_requests(request: Request, call_next):
     start = time.perf_counter()
     response = await call_next(request)
     duration = time.perf_counter() - start
-    logger.info(f"{request.method} {request.url.path} → {response.status_code} ({duration:.3f}s)")
+    logger.info(
+        f"{request.method} {request.url.path} → {response.status_code} ({duration:.3f}s)"
+    )
     return response
 
 
@@ -78,20 +82,19 @@ async def generic_error_handler(request: Request, exc: Exception):
 # Protected file serving — requires JWT auth
 # IMPORTANT: Do NOT use StaticFiles(directory=...) for user content — that serves files without auth.
 # Use the /api/v1/clips/{id}/stream endpoint (authenticated) to serve clip files.
-import os
-
 os.makedirs(settings.LOCAL_STORAGE_PATH, exist_ok=True)
 
 
-# Routers
-from app.api.routes import analytics, auth, clips, settings, videos, youtube
+# Routers — imported after app init to avoid circular imports
+from app.api.routes import analytics, auth, clips, videos, youtube  # noqa: E402
+from app.api.routes import settings as settings_router  # noqa: E402
 
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(videos.router, prefix="/api/v1", tags=["videos"])
 app.include_router(clips.router, prefix="/api/v1", tags=["clips"])
 app.include_router(youtube.router, prefix="/api/v1", tags=["youtube"])
 app.include_router(analytics.router, prefix="/api/v1", tags=["analytics"])
-app.include_router(settings.router, prefix="/api/v1", tags=["settings"])
+app.include_router(settings_router.router, prefix="/api/v1", tags=["settings"])
 
 
 @app.get("/health", tags=["system"])

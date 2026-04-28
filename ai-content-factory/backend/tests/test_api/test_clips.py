@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.clip import Clip
 from app.models.user import User
-from app.models.video import Video
+from app.models.video import Video, YoutubeAccount
 
 
 # ── GET /api/v1/videos/{id}/clips ────────────────────────────────────────────
@@ -223,7 +223,7 @@ async def test_publish_clip_not_approved(client: AsyncClient, auth_headers: dict
 @pytest.mark.asyncio
 @patch("app.workers.tasks.distribute.distribute_clip")
 async def test_publish_clip_approved(
-    mock_distribute, client: AsyncClient, db: AsyncSession, auth_headers: dict, test_clip
+    mock_distribute, client: AsyncClient, db: AsyncSession, auth_headers: dict, test_clip, test_user: User
 ):
     """Approved clip triggers distribute task and returns 202."""
     mock_task = MagicMock()
@@ -232,6 +232,15 @@ async def test_publish_clip_approved(
 
     # Approve the clip first
     test_clip.review_status = "approved"
+
+    # Create a connected YouTube account so the route doesn't reject with 400
+    yt_account = YoutubeAccount(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        channel_id="UC_test_channel",
+        channel_name="Test Channel",
+    )
+    db.add(yt_account)
     await db.commit()
 
     resp = await client.post(

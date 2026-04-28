@@ -1,5 +1,7 @@
 """Celery application configuration."""
+
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import settings
 
@@ -16,8 +18,6 @@ celery_app = Celery(
         "app.workers.tasks.analytics",
     ],
 )
-
-from celery.schedules import crontab
 
 celery_app.conf.update(
     task_serializer="json",

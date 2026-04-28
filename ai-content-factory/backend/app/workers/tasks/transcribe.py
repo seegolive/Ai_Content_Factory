@@ -1,4 +1,5 @@
 """Transcription subtask — used when transcription is dispatched as a standalone task."""
+
 from app.workers.celery_app import celery_app
 
 

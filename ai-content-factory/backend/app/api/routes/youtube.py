@@ -1,5 +1,6 @@
 """YouTube analytics routes."""
-from fastapi import APIRouter, Depends, HTTPException, status
+
+from fastapi import APIRouter, Depends
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,54 +31,72 @@ async def get_youtube_stats(
     stats = []
     for account in accounts:
         if not account.access_token:
-            stats.append({
-                "channel_id": account.channel_id,
-                "channel_name": account.channel_name,
-                "connected": True,
-                "error": "No access token stored",
-            })
+            stats.append(
+                {
+                    "channel_id": account.channel_id,
+                    "channel_name": account.channel_name,
+                    "connected": True,
+                    "error": "No access token stored",
+                }
+            )
             continue
 
         try:
             # Try with stored access token first
             info = await yt_service.get_channel_info(account.access_token)
-            stats.append({
-                "channel_id": info.channel_id,
-                "channel_name": info.channel_name,
-                "subscriber_count": info.subscriber_count,
-                "thumbnail_url": info.thumbnail_url,
-                "connected": True,
-            })
+            stats.append(
+                {
+                    "channel_id": info.channel_id,
+                    "channel_name": info.channel_name,
+                    "subscriber_count": info.subscriber_count,
+                    "thumbnail_url": info.thumbnail_url,
+                    "total_views": info.total_views,
+                    "video_count": info.video_count,
+                    "connected": True,
+                }
+            )
         except Exception:
             # Try refreshing the token
             if account.refresh_token:
                 try:
-                    new_token = await yt_service.refresh_access_token(account.refresh_token)
+                    new_token = await yt_service.refresh_access_token(
+                        account.refresh_token
+                    )
                     account.access_token = new_token
                     await db.commit()
                     info = await yt_service.get_channel_info(new_token)
-                    stats.append({
-                        "channel_id": info.channel_id,
-                        "channel_name": info.channel_name,
-                        "subscriber_count": info.subscriber_count,
-                        "thumbnail_url": info.thumbnail_url,
-                        "connected": True,
-                    })
+                    stats.append(
+                        {
+                            "channel_id": info.channel_id,
+                            "channel_name": info.channel_name,
+                            "subscriber_count": info.subscriber_count,
+                            "thumbnail_url": info.thumbnail_url,
+                            "total_views": info.total_views,
+                            "video_count": info.video_count,
+                            "connected": True,
+                        }
+                    )
                 except Exception as e:
-                    logger.warning(f"Could not refresh YouTube token for account {account.channel_id}: {e}")
-                    stats.append({
+                    logger.warning(
+                        f"Could not refresh YouTube token for account {account.channel_id}: {e}"
+                    )
+                    stats.append(
+                        {
+                            "channel_id": account.channel_id,
+                            "channel_name": account.channel_name,
+                            "connected": True,
+                            "error": "Token expired — please reconnect",
+                        }
+                    )
+            else:
+                stats.append(
+                    {
                         "channel_id": account.channel_id,
                         "channel_name": account.channel_name,
                         "connected": True,
                         "error": "Token expired — please reconnect",
-                    })
-            else:
-                stats.append({
-                    "channel_id": account.channel_id,
-                    "channel_name": account.channel_name,
-                    "connected": True,
-                    "error": "Token expired — please reconnect",
-                })
+                    }
+                )
 
     return {"connected": True, "accounts": stats}
 
@@ -120,10 +139,14 @@ async def get_youtube_analytics(
         except Exception:
             if account.refresh_token:
                 try:
-                    new_token = await yt_service.refresh_access_token(account.refresh_token)
+                    new_token = await yt_service.refresh_access_token(
+                        account.refresh_token
+                    )
                     account.access_token = new_token
                     await db.commit()
-                    return await yt_service.get_channel_analytics(new_token, max_videos=20)
+                    return await yt_service.get_channel_analytics(
+                        new_token, max_videos=20
+                    )
                 except Exception as e:
                     logger.warning(f"Analytics fetch failed even after refresh: {e}")
                     raise

@@ -7,13 +7,12 @@ STAGES (in order):
 If a stage fails, the pipeline saves the error and notifies the user.
 On retry, completed stages are skipped — idempotent execution.
 """
+
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
 from typing import Optional
 
-from celery import states
 from celery.exceptions import MaxRetriesExceededError
 from loguru import logger
 
@@ -43,7 +42,9 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-@celery_app.task(bind=True, max_retries=3, name="app.workers.tasks.pipeline.process_video_pipeline")
+@celery_app.task(
+    bind=True, max_retries=3, name="app.workers.tasks.pipeline.process_video_pipeline"
+)
 def process_video_pipeline(self, video_id: str):
     """
     Process a video through all pipeline stages.
@@ -54,17 +55,25 @@ def process_video_pipeline(self, video_id: str):
     async def _run():
         from sqlalchemy import select
         from sqlalchemy.pool import NullPool
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
         from app.core.config import settings
         from app.models.user import User
-        from app.models.video import Video, YoutubeAccount
+        from app.models.video import Video
 
         # Use NullPool to avoid event-loop conflicts in Celery forked workers
         _engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-        _SessionLocal = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
+        _SessionLocal = async_sessionmaker(
+            _engine, class_=AsyncSession, expire_on_commit=False
+        )
 
         async with _SessionLocal() as db:
-            result = await db.execute(select(Video).where(Video.id == uuid.UUID(video_id)))
+            result = await db.execute(
+                select(Video).where(Video.id == uuid.UUID(video_id))
+            )
             video = result.scalar_one_or_none()
             if not video:
                 logger.error(f"[Pipeline] Video {video_id} not found")
@@ -75,7 +84,9 @@ def process_video_pipeline(self, video_id: str):
             user = user_result.scalar_one_or_none()
 
             current_idx = _checkpoint_index(video.checkpoint)
-            logger.info(f"[Pipeline] Resuming from checkpoint: {video.checkpoint!r} (idx={current_idx})")
+            logger.info(
+                f"[Pipeline] Resuming from checkpoint: {video.checkpoint!r} (idx={current_idx})"
+            )
 
             # Clear stale error from previous failed attempts
             if video.error_message:
@@ -126,6 +137,7 @@ def process_video_pipeline(self, video_id: str):
                     # Count clips
                     from sqlalchemy import func
                     from app.models.clip import Clip
+
                     count_result = await db.execute(
                         select(func.count(Clip.id)).where(Clip.video_id == video.id)
                     )
@@ -133,6 +145,7 @@ def process_video_pipeline(self, video_id: str):
 
                     if user:
                         from app.services.notification import NotificationService
+
                         notifier = NotificationService()
                         await notifier.notify_job_complete(
                             video_title=video.title or str(video.id),
@@ -151,6 +164,7 @@ def process_video_pipeline(self, video_id: str):
 
                 if user:
                     from app.services.notification import NotificationService
+
                     notifier = NotificationService()
                     await notifier.notify_job_error(
                         video_title=video.title or str(video.id),
@@ -172,6 +186,7 @@ def process_video_pipeline(self, video_id: str):
 
 # ── Stage implementations ────────────────────────────────────────────────────
 
+
 async def _stage_input_validation(video, db):
     from app.services.copyright_check import CopyrightCheckService
 
@@ -190,7 +205,9 @@ async def _stage_input_validation(video, db):
         result = await checker.check_audio(video.file_path)
         video.copyright_status = result.status
         if result.is_flagged:
-            logger.warning(f"[Pipeline] Copyright flag on {video.id}: {result.matched_music}")
+            logger.warning(
+                f"[Pipeline] Copyright flag on {video.id}: {result.matched_music}"
+            )
 
     video.checkpoint = "input_validated"
     await db.commit()
@@ -210,10 +227,10 @@ async def _download_youtube_video(video, db):
     # Map quality_preference to yt-dlp format string
     quality = getattr(video, "quality_preference", "1440p") or "1440p"
     quality_format_map = {
-        "1080p":  "bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
-        "1440p":  "bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
-        "2160p":  "bestvideo[height>=2160]+bestaudio/bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
-        "best":   "bestvideo+bestaudio/best",
+        "1080p": "bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
+        "1440p": "bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
+        "2160p": "bestvideo[height>=2160]+bestaudio/bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
+        "best": "bestvideo+bestaudio/best",
     }
     fmt = quality_format_map.get(quality, quality_format_map["1440p"])
 
@@ -230,12 +247,13 @@ async def _download_youtube_video(video, db):
                 try:
                     import psycopg2
                     from app.core.config import settings
+
                     sync_url = settings.DATABASE_URL_SYNC
                     conn = psycopg2.connect(sync_url)
                     cur = conn.cursor()
                     cur.execute(
                         "UPDATE videos SET download_progress = %s WHERE id = %s",
-                        (pct, video_id_str)
+                        (pct, video_id_str),
                     )
                     conn.commit()
                     cur.close()
@@ -255,12 +273,16 @@ async def _download_youtube_video(video, db):
         "noprogress": False,
         "nopart": True,
         "overwrites": True,
-        "extractor_args": {"youtube": {"player_client": ["android_vr", "android", "web"]}},
+        "extractor_args": {
+            "youtube": {"player_client": ["android_vr", "android", "web"]}
+        },
         "progress_hooks": [_progress_hook],
-        "postprocessors": [{
-            "key": "FFmpegVideoConvertor",
-            "preferedformat": "mp4",
-        }],
+        "postprocessors": [
+            {
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "mp4",
+            }
+        ],
     }
 
     if os.path.exists(cookies_path):
@@ -301,7 +323,9 @@ async def _download_youtube_video(video, db):
                 break
 
     if not os.path.exists(downloaded_path):
-        raise FileNotFoundError(f"yt-dlp download failed: file not found for video {video.id}")
+        raise FileNotFoundError(
+            f"yt-dlp download failed: file not found for video {video.id}"
+        )
 
     # Update video record
     file_size_bytes = os.path.getsize(downloaded_path)
@@ -316,7 +340,9 @@ async def _download_youtube_video(video, db):
         video.thumbnail_url = info["thumbnail"]
 
     await db.commit()
-    logger.info(f"[Pipeline] Downloaded: {video.title!r} ({video.file_size_mb:.1f} MB) → {downloaded_path}")
+    logger.info(
+        f"[Pipeline] Downloaded: {video.title!r} ({video.file_size_mb:.1f} MB) → {downloaded_path}"
+    )
 
 
 async def _stage_transcription(video, db):
@@ -325,8 +351,35 @@ async def _stage_transcription(video, db):
     if not video.file_path or not os.path.exists(video.file_path):
         raise FileNotFoundError(f"Cannot transcribe: file missing {video.file_path}")
 
+    # Reset download_progress so it starts from 0 (not leftover 100 from yt-dlp)
+    video.download_progress = 0
+    await db.commit()
+
+    # Write transcription sub-progress to download_progress column (reused for display).
+    # Transcription maps to pipeline 15–35%; we write whisper progress (0-100) here
+    # so the frontend can show live progress rather than a stuck bar.
+    video_id_str = str(video.id)
+
+    def _transcription_progress(whisper_pct: int):
+        """Called from transcription thread every ~2% — writes to DB via sync psycopg2."""
+        try:
+            import psycopg2
+            from app.core.config import settings
+            conn = psycopg2.connect(settings.DATABASE_URL_SYNC)
+            cur = conn.cursor()
+            # Store whisper 0-100 in download_progress; frontend maps it to 15-35% pipeline bar
+            cur.execute(
+                "UPDATE videos SET download_progress = %s WHERE id = %s",
+                (whisper_pct, video_id_str),
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception:
+            pass  # non-critical
+
     service = WhisperTranscriptionService()
-    result = await service.transcribe(video.file_path)
+    result = await service.transcribe(video.file_path, progress_callback=_transcription_progress)
 
     video.transcript = result.full_text
     video.transcript_segments = [
@@ -347,7 +400,7 @@ async def _stage_transcription(video, db):
 
 
 async def _stage_ai_analysis(video, db):
-    from app.services.ai_brain import AIBrainService, MOMENT_DURATION_RULES, FALLBACK_DURATION_RULE
+    from app.services.ai_brain import AIBrainService
     from app.services.transcription import TranscriptResult, TranscriptSegment
 
     if not video.transcript:
@@ -382,7 +435,10 @@ async def _stage_ai_analysis(video, db):
     if rejected_clips:
         logger.warning(
             f"[Pipeline] {len(rejected_clips)} clips rejected by duration validation: "
-            + ", ".join(f"{c.moment_type}({c.end_time - c.start_time:.0f}s)" for c in rejected_clips)
+            + ", ".join(
+                f"{c.moment_type}({c.end_time - c.start_time:.0f}s)"
+                for c in rejected_clips
+            )
         )
 
     # Store valid clip suggestions in DB
@@ -447,6 +503,7 @@ def _validate_clip_durations(clips, video_duration: float):
         elif duration > rule["max"]:
             # Trim from end (preserve buildup + action, trim resolution tail)
             from copy import copy
+
             trimmed = copy(clip)
             trimmed.end_time = clip.start_time + rule["max"]
             valid.append(trimmed)
@@ -459,26 +516,34 @@ def _validate_clip_durations(clips, video_duration: float):
 def _try_extend_clip(clip, rule: dict, video_duration: float):
     """
     Try to extend a clip to meet minimum duration by pulling start earlier
-    (adding buildup context) and/or extending end (adding resolution).
+    and/or extending end. Distributes the deficit evenly between both sides.
+    Not limited by buildup/resolution hints — will extend as much as needed.
     Returns modified clip copy.
     """
     from copy import copy
+
     extended = copy(clip)
-    duration = extended.end_time - extended.start_time
-    deficit = rule["min"] - duration
+    target = rule["min"]
 
-    # First: extend start backwards to add build-up
-    buildup_add = min(rule.get("buildup", 8), deficit)
-    new_start = max(0.0, extended.start_time - buildup_add)
-    extended.start_time = new_start
-    duration = extended.end_time - extended.start_time
-
-    # Second: extend end forwards to add resolution
-    if duration < rule["min"]:
-        still_short = rule["min"] - duration
-        resolution_add = min(rule.get("resolution", 8), still_short)
-        new_end = min(video_duration, extended.end_time + resolution_add)
+    # Distribute deficit evenly: half from start, half from end
+    for _ in range(10):  # iterate until stable
+        duration = extended.end_time - extended.start_time
+        if duration >= target:
+            break
+        deficit = target - duration
+        half = deficit / 2.0
+        new_start = max(0.0, extended.start_time - half)
+        new_end = min(video_duration, extended.end_time + half)
+        extended.start_time = new_start
         extended.end_time = new_end
+        # If one side hit boundary, give remaining deficit to the other
+        duration = extended.end_time - extended.start_time
+        if duration < target:
+            remaining = target - duration
+            if extended.start_time > 0:
+                extended.start_time = max(0.0, extended.start_time - remaining)
+            else:
+                extended.end_time = min(video_duration, extended.end_time + remaining)
 
     return extended
 
@@ -492,7 +557,8 @@ async def _stage_qc_filtering(video, db):
 async def _stage_video_processing(video, db):
     from sqlalchemy import select
     from app.models.clip import Clip
-    from app.models.channel_config import ChannelCropConfig, GameCropProfile
+    from app.models.channel_config import ChannelCropConfig
+    from app.models.video import YoutubeAccount
     from app.services.video_processor import VideoProcessorService
     from app.services.game_detector import GameDetector
     from app.services.facecam_detector import FacecamDetector
@@ -513,15 +579,19 @@ async def _stage_video_processing(video, db):
     yt_account_id_for_config = video.youtube_account_id
     if not yt_account_id_for_config:
         yt_fb = await db.execute(
-            select(YoutubeAccount).where(YoutubeAccount.user_id == video.user_id).limit(1)
+            select(YoutubeAccount)
+            .where(YoutubeAccount.user_id == video.user_id)
+            .limit(1)
         )
         yt_fb_row = yt_fb.scalars().first()
         if yt_fb_row:
             yt_account_id_for_config = yt_fb_row.id
-            logger.info(f"[Pipeline] No yt_account on video, using fallback account {yt_account_id_for_config}")
+            logger.info(
+                f"[Pipeline] No yt_account on video, using fallback account {yt_account_id_for_config}"
+            )
 
     if yt_account_id_for_config:
-        # Load channel config
+        # Load channel config saved by the user from /settings/crop-config
         cfg_result = await db.execute(
             select(ChannelCropConfig).where(
                 ChannelCropConfig.youtube_account_id == yt_account_id_for_config
@@ -529,16 +599,31 @@ async def _stage_video_processing(video, db):
         )
         channel_config = cfg_result.scalars().first()
 
-        if not channel_config:
+        if channel_config:
+            logger.info(
+                f"[Pipeline] Loaded user crop config: channel={channel_config.channel_id} "
+                f"mode={channel_config.default_vertical_crop_mode} "
+                f"canvas={channel_config.obs_canvas_width}x{channel_config.obs_canvas_height}"
+            )
+        else:
+            logger.warning(
+                f"[Pipeline] No saved crop config found for yt_account={yt_account_id_for_config} "
+                "— running facecam auto-detect"
+            )
             # Auto-detect and create config
             detector = FacecamDetector()
-            region = detector.detect_facecam_region(video.file_path) if video.file_path else None
+            region = (
+                detector.detect_facecam_region(video.file_path)
+                if video.file_path
+                else None
+            )
             if region:
                 suggested = detector.suggest_crop_config(region)
                 from app.models.channel_config import seed_default_game_profiles
+
                 channel_config = ChannelCropConfig(
-                    youtube_account_id=video.youtube_account_id,
-                    channel_id=str(video.youtube_account_id),  # fallback key
+                    youtube_account_id=yt_account_id_for_config,
+                    channel_id=str(yt_account_id_for_config),  # fallback key
                     default_vertical_crop_mode=suggested["vertical_crop_mode"],
                     default_facecam_position=suggested["facecam_position"],
                     default_crop_x_offset=suggested.get("crop_x_offset", 0),
@@ -548,13 +633,23 @@ async def _stage_video_processing(video, db):
                 await db.flush()
                 for p in seed_default_game_profiles(channel_config):
                     db.add(p)
-                logger.info(f"[Pipeline] Auto-created crop config: {suggested['vertical_crop_mode']}")
-            else:
-                # Use in-memory default (blur_pillarbox)
-                channel_config = ChannelCropConfig(
-                    youtube_account_id=video.youtube_account_id,
-                    channel_id=str(video.youtube_account_id),
+                logger.info(
+                    f"[Pipeline] Auto-created crop config: {suggested['vertical_crop_mode']}"
                 )
+            else:
+                # Use in-memory default (blur_pillarbox) — NOT saved to DB
+                logger.warning(
+                    "[Pipeline] Facecam not detected — using in-memory blur_pillarbox default"
+                )
+                channel_config = ChannelCropConfig(
+                    youtube_account_id=yt_account_id_for_config,
+                    channel_id=str(yt_account_id_for_config),
+                )
+    else:
+        logger.warning(
+            "[Pipeline] No YouTube account linked to this video or user — "
+            "crop config cannot be loaded, using blur_pillarbox default"
+        )
 
     # ── Detect game and resolve game profile ───────────────────────────
     game_detector = GameDetector()
@@ -571,45 +666,38 @@ async def _stage_video_processing(video, db):
 
     for clip in clips:
         try:
-            clip_filename = f"{clip.id}.mp4"
-            clip_path = os.path.join(clips_dir, clip_filename)
-
-            await processor.cut_clip(
+            # Single-pass: cut + vertical crop combined directly from the source file.
+            # No intermediate horizontal file — ~50% faster per clip.
+            vertical_path = os.path.join(clips_dir, f"{clip.id}_vertical.mp4")
+            await processor.resize_to_vertical_smart(
                 input_path=video.file_path,
-                output_path=clip_path,
+                output_path=vertical_path,
+                game_profile=default_game_profile,
+                channel_config=channel_config,
                 start_time=clip.start_time,
                 end_time=clip.end_time,
             )
+            logger.info(f"[Pipeline] Cut+crop done for clip {clip.id}")
 
-            # Generate vertical 9:16 version using smart crop
-            vertical_path = os.path.join(clips_dir, f"{clip.id}_vertical.mp4")
-            try:
-                await processor.resize_to_vertical_smart(
-                    input_path=clip_path,
-                    output_path=vertical_path,
-                    game_profile=default_game_profile,
-                    channel_config=channel_config,
-                )
-                clip.clip_path_vertical = vertical_path
-                logger.info(f"[Pipeline] Vertical crop done for clip {clip.id}")
-            except Exception as crop_err:
-                logger.warning(f"[Pipeline] Vertical crop failed for clip {clip.id}: {crop_err}")
-
-            # QC check — pass moment_type for duration-aware validation
-            qc_result = await processor.run_qc_check(clip_path)
+            # QC check on the vertical output
+            qc_result = await processor.run_qc_check(vertical_path)
             # Also run moment-type duration check via qc_service
             from app.services.qc_service import run_qc as run_moment_qc
+
             duration_qc = await run_moment_qc(
-                clip_path,
+                vertical_path,
                 moment_type=clip.moment_type,
                 clip_duration=clip.end_time - clip.start_time,
             )
             # Merge issues from both checks
             combined_issues = qc_result.issues + [
-                i for i in duration_qc.issues if i.type not in {qi.type for qi in qc_result.issues}
+                i
+                for i in duration_qc.issues
+                if i.type not in {qi.type for qi in qc_result.issues}
             ]
             passed = qc_result.passed and duration_qc.passed
-            clip.clip_path = clip_path
+            clip.clip_path = vertical_path
+            clip.clip_path_vertical = vertical_path
             clip.qc_status = "passed" if passed else "failed"
             clip.qc_issues = [
                 {"type": i.type, "description": i.description, "severity": i.severity}
@@ -619,7 +707,9 @@ async def _stage_video_processing(video, db):
         except Exception as e:
             logger.error(f"[Pipeline] Failed to process clip {clip.id}: {e}")
             clip.qc_status = "failed"
-            clip.qc_issues = [{"type": "processing_error", "description": str(e), "severity": "error"}]
+            clip.qc_issues = [
+                {"type": "processing_error", "description": str(e), "severity": "error"}
+            ]
 
     video.checkpoint = "clips_done"
     await db.commit()

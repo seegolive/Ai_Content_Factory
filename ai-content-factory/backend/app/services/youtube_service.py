@@ -1,10 +1,9 @@
 """YouTube Data API v3 service."""
+
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 from loguru import logger
 
@@ -17,6 +16,8 @@ class ChannelInfo:
     channel_name: str
     subscriber_count: int
     thumbnail_url: Optional[str]
+    total_views: int = 0
+    video_count: int = 0
 
 
 @dataclass
@@ -46,7 +47,6 @@ class ChannelAnalytics:
 
 
 class YouTubeService:
-
     def _build_service(self, access_token: str):
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
@@ -57,27 +57,33 @@ class YouTubeService:
     async def get_channel_info(self, access_token: str) -> ChannelInfo:
         """Fetch authenticated user's channel info."""
         import asyncio
-        from functools import partial
 
         def _fetch():
             service = self._build_service(access_token)
-            resp = service.channels().list(
-                part="snippet,statistics", mine=True
-            ).execute()
+            resp = (
+                service.channels().list(part="snippet,statistics", mine=True).execute()
+            )
             if not resp.get("items"):
                 raise ValueError("No YouTube channel found for this account")
             item = resp["items"][0]
+            stats = item["statistics"]
             return ChannelInfo(
                 channel_id=item["id"],
                 channel_name=item["snippet"]["title"],
-                subscriber_count=int(item["statistics"].get("subscriberCount", 0)),
-                thumbnail_url=item["snippet"]["thumbnails"].get("default", {}).get("url"),
+                subscriber_count=int(stats.get("subscriberCount", 0)),
+                thumbnail_url=item["snippet"]["thumbnails"]
+                .get("default", {})
+                .get("url"),
+                total_views=int(stats.get("viewCount", 0)),
+                video_count=int(stats.get("videoCount", 0)),
             )
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _fetch)
 
-    async def get_channel_analytics(self, access_token: str, max_videos: int = 20) -> ChannelAnalytics:
+    async def get_channel_analytics(
+        self, access_token: str, max_videos: int = 20
+    ) -> ChannelAnalytics:
         """Fetch channel KPIs + per-video stats using youtube.readonly scope."""
         import asyncio
         import re
@@ -96,9 +102,11 @@ class YouTubeService:
             service = self._build_service(access_token)
 
             # 1. Channel-level stats
-            ch_resp = service.channels().list(
-                part="snippet,statistics,contentDetails", mine=True
-            ).execute()
+            ch_resp = (
+                service.channels()
+                .list(part="snippet,statistics,contentDetails", mine=True)
+                .execute()
+            )
             if not ch_resp.get("items"):
                 raise ValueError("No YouTube channel found for this account")
             ch = ch_resp["items"][0]
@@ -143,25 +151,33 @@ class YouTubeService:
             # 3. Fetch per-video stats in batches of 50
             video_stats: list[VideoStat] = []
             for i in range(0, len(video_ids), 50):
-                batch = video_ids[i:i + 50]
-                v_resp = service.videos().list(
-                    part="snippet,statistics,contentDetails",
-                    id=",".join(batch),
-                ).execute()
+                batch = video_ids[i : i + 50]
+                v_resp = (
+                    service.videos()
+                    .list(
+                        part="snippet,statistics,contentDetails",
+                        id=",".join(batch),
+                    )
+                    .execute()
+                )
                 for v in v_resp.get("items", []):
                     vs = v["statistics"]
-                    video_stats.append(VideoStat(
-                        video_id=v["id"],
-                        title=v["snippet"]["title"],
-                        published_at=v["snippet"]["publishedAt"],
-                        thumbnail_url=v["snippet"]["thumbnails"].get("medium", {}).get("url"),
-                        views=int(vs.get("viewCount", 0)),
-                        likes=int(vs.get("likeCount", 0)),
-                        comments=int(vs.get("commentCount", 0)),
-                        duration_seconds=_iso8601_to_seconds(
-                            v["contentDetails"].get("duration", "PT0S")
-                        ),
-                    ))
+                    video_stats.append(
+                        VideoStat(
+                            video_id=v["id"],
+                            title=v["snippet"]["title"],
+                            published_at=v["snippet"]["publishedAt"],
+                            thumbnail_url=v["snippet"]["thumbnails"]
+                            .get("medium", {})
+                            .get("url"),
+                            views=int(vs.get("viewCount", 0)),
+                            likes=int(vs.get("likeCount", 0)),
+                            comments=int(vs.get("commentCount", 0)),
+                            duration_seconds=_iso8601_to_seconds(
+                                v["contentDetails"].get("duration", "PT0S")
+                            ),
+                        )
+                    )
 
             # Sort by published date for "recent", by views for "top"
             recent = sorted(video_stats, key=lambda v: v.published_at, reverse=True)
@@ -192,7 +208,6 @@ class YouTubeService:
     ) -> str:
         """Upload video to YouTube using resumable upload. Returns youtube_video_id."""
         import asyncio
-        from functools import partial
 
         def _upload():
             from googleapiclient.http import MediaFileUpload
@@ -216,7 +231,9 @@ class YouTubeService:
             while response is None:
                 status, response = request.next_chunk()
                 if status:
-                    logger.info(f"YouTube upload progress: {int(status.progress() * 100)}%")
+                    logger.info(
+                        f"YouTube upload progress: {int(status.progress() * 100)}%"
+                    )
 
             return response["id"]
 

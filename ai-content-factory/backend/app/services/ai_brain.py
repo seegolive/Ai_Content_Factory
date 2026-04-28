@@ -1,8 +1,8 @@
 """AI Brain service — multi-model fallback (Groq → Gemini Flash → GPT-4o-mini)."""
-import asyncio
+
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import httpx
@@ -12,17 +12,78 @@ from app.core.config import settings
 from app.services.transcription import TranscriptResult
 
 
+# ── YouTube Shorts hard limits (importable by QC service & frontend) ────────
+SHORTS_MIN_DURATION = 60   # seconds
+SHORTS_MAX_DURATION = 180  # seconds (YouTube Shorts official limit)
+
 # ── Duration rules per moment type (mirrored in frontend DurationBadge) ─────
+# All values within SHORTS_MIN_DURATION..SHORTS_MAX_DURATION
 MOMENT_DURATION_RULES = {
-    "clutch":      {"min": 45, "ideal_min": 55, "ideal_max": 75,  "max": 90,  "buildup": 10, "resolution": 12},
-    "funny":       {"min": 20, "ideal_min": 25, "ideal_max": 45,  "max": 60,  "buildup": 5,  "resolution": 8},
-    "achievement": {"min": 60, "ideal_min": 70, "ideal_max": 90,  "max": 120, "buildup": 15, "resolution": 15},
-    "rage":        {"min": 30, "ideal_min": 40, "ideal_max": 60,  "max": 75,  "buildup": 8,  "resolution": 10},
-    "epic":        {"min": 45, "ideal_min": 60, "ideal_max": 90,  "max": 100, "buildup": 12, "resolution": 12},
-    "fail":        {"min": 20, "ideal_min": 30, "ideal_max": 50,  "max": 60,  "buildup": 8,  "resolution": 8},
-    "tutorial":    {"min": 45, "ideal_min": 60, "ideal_max": 90,  "max": 120, "buildup": 5,  "resolution": 10},
+    "clutch": {
+        "min": 60,
+        "ideal_min": 75,
+        "ideal_max": 120,
+        "max": 180,
+        "buildup": 15,
+        "resolution": 15,
+    },
+    "funny": {
+        "min": 60,
+        "ideal_min": 60,
+        "ideal_max": 90,
+        "max": 150,
+        "buildup": 12,
+        "resolution": 12,
+    },
+    "achievement": {
+        "min": 60,
+        "ideal_min": 90,
+        "ideal_max": 150,
+        "max": 180,
+        "buildup": 15,
+        "resolution": 15,
+    },
+    "rage": {
+        "min": 60,
+        "ideal_min": 70,
+        "ideal_max": 110,
+        "max": 150,
+        "buildup": 12,
+        "resolution": 12,
+    },
+    "epic": {
+        "min": 60,
+        "ideal_min": 90,
+        "ideal_max": 140,
+        "max": 180,
+        "buildup": 15,
+        "resolution": 15,
+    },
+    "fail": {
+        "min": 60,
+        "ideal_min": 60,
+        "ideal_max": 90,
+        "max": 150,
+        "buildup": 12,
+        "resolution": 12,
+    },
+    "tutorial": {
+        "min": 60,
+        "ideal_min": 90,
+        "ideal_max": 150,
+        "max": 180,
+        "buildup": 10,
+        "resolution": 12,
+    },
 }
-FALLBACK_DURATION_RULE = {"min": 30, "ideal_min": 45, "ideal_max": 75, "max": 90, "buildup": 8, "resolution": 8}
+FALLBACK_DURATION_RULE = {
+    "min": 60,
+    "ideal_min": 75,
+    "ideal_max": 120,
+    "max": 180,
+    "buildup": 12,
+    "resolution": 12,
+}
 
 
 @dataclass
@@ -91,24 +152,40 @@ Viral scoring untuk gaming content (total 100 poin):
 ATURAN DURASI CLIP — BERBEDA PER TIPE MOMEN (WAJIB DIIKUTI)
 ═══════════════════════════════════════════════════════
 
-LANGKAH WAJIB: Tentukan moment_type DULU, baru tentukan durasi.
+PERINGATAN KERAS: Kamu DILARANG menghasilkan clip yang durasinya kurang dari 60 detik.
+Jangan pernah output start_time dan end_time yang selisihnya kurang dari 60 detik.
+Ini adalah ATURAN ABSOLUT, bukan saran.
 
-┌─────────────┬────────┬────────────┬────────┬──────────────────────────────────────────┐
-│ moment_type │  min   │   ideal    │  max   │ kenapa                                   │
-├─────────────┼────────┼────────────┼────────┼──────────────────────────────────────────┤
-│ clutch      │  45s   │  55–75s    │  90s   │ tension + fight + reaksi kelegaan        │
-│ funny       │  20s   │  25–45s    │  60s   │ joke harus landing cepat                 │
-│ achievement │  60s   │  70–90s    │ 120s   │ penonton butuh context kenapa susah      │
-│ rage        │  30s   │  40–60s    │  75s   │ energy rage cepat turun                  │
-│ epic        │  45s   │  60–90s    │ 100s   │ butuh grandeur, jangan buru-buru         │
-│ fail        │  20s   │  30–50s    │  60s   │ singkat + reaksi = cukup                 │
-│ tutorial    │  45s   │  60–90s    │ 120s   │ step by step + verifikasi hasil          │
-└─────────────┴────────┴────────────┴────────┴──────────────────────────────────────────┘
+LANGKAH WAJIB: Tentukan moment_type DULU, baru tentukan durasi.
+Semua clip MINIMUM 60 detik — sesuai standar YouTube Shorts yang optimal.
+
+CONTOH BENAR:
+{‘start_time’: 120.0, ‘end_time’: 185.0}  ← durasi 65s ✓
+{‘start_time’: 500.0, ‘end_time’: 590.0}  ← durasi 90s ✓
+
+CONTOH SALAH (JANGAN LAKUKAN):
+{‘start_time’: 120.0, ‘end_time’: 140.0}  ← durasi 20s ✗ DITOLAK
+{‘start_time’: 500.0, ‘end_time’: 527.0}  ← durasi 27s ✗ DITOLAK
+
+┌─────────────┬────────┬─────────────┬────────┬─────────────────────────────────────────────────────┐
+│ moment_type │  min   │    ideal    │  max   │ kenapa                                              │
+├─────────────┼────────┼─────────────┼────────┼─────────────────────────────────────────────────────┤
+│ clutch      │  60s   │  75–120s    │ 180s   │ tension butuh ruang penuh                           │
+│ funny       │  60s   │  60–90s     │ 150s   │ joke jangan dragged, energi cepat habis             │
+│ achievement │  60s   │  90–150s    │ 180s   │ butuh story arc + context kenapa susah              │
+│ rage        │  60s   │  70–110s    │ 150s   │ rage cepat habis energi, jangan dipanjang           │
+│ epic        │  60s   │  90–140s    │ 180s   │ grandeur full, butuh ruang naratif                  │
+│ fail        │  60s   │  60–90s     │ 150s   │ punchy + reaksi, jangan panjang                     │
+│ tutorial    │  60s   │  90–150s    │ 180s   │ step-by-step + verifikasi hasil butuh waktu         │
+└─────────────┴────────┴─────────────┴────────┴─────────────────────────────────────────────────────┘
+
+HARD LIMIT YOUTUBE SHORTS: 60 detik MINIMUM, 180 detik MAKSIMUM.
+Clip di luar range ini OTOMATIS DITOLAK — tidak ada pengecualian.
 
 STRUKTUR SETIAP CLIP (WAJIB ADA KETIGA BAGIAN):
-1. BUILD-UP: context sebelum momen utama (clutch:10s, funny:5s, achievement:15s, rage:8s, epic:12s, fail:8s, tutorial:5s)
+1. BUILD-UP: context sebelum momen utama (clutch:15s, funny:12s, achievement:15s, rage:12s, epic:15s, fail:12s, tutorial:10s)
 2. MOMEN UTAMA: inti yang viral — jangan dipotong sama sekali
-3. RESOLUSI: reaksi + aftermath (clutch:12s, funny:8s, achievement:15s, rage:10s, epic:12s, fail:8s, tutorial:10s)
+3. RESOLUSI: reaksi + aftermath (clutch:15s, funny:12s, achievement:15s, rage:12s, epic:15s, fail:12s, tutorial:12s)
 
 ATURAN POTONG — JANGAN PERNAH DILANGGAR:
 ❌ Jangan potong di tengah kalimat streamer
@@ -118,11 +195,12 @@ ATURAN POTONG — JANGAN PERNAH DILANGGAR:
 ✅ Mulai saat ada audio (suara gameplay atau streamer bicara)
 ✅ Akhiri saat ada natural pause atau kalimat selesai
 
-PENANGANAN MOMEN TERLALU PENDEK:
-Jika momen secara natural < minimum untuk tipenya:
-1. Extend ke build-up sebelumnya yang relevan
-2. Gabungkan 2 momen sejenis yang berdekatan (< 10 detik jeda)
-3. Jika tetap tidak bisa: SKIP — jangan dipaksakan
+PENANGANAN MOMEN DI BAWAH 60 DETIK:
+Jika momen secara natural < 60 detik:
+1. WAJIB extend ke build-up sebelumnya yang relevan sampai mencapai 60s
+2. Gabungkan 2 momen yang berdekatan (jeda < 15 detik) menjadi satu clip
+3. Extend ke aftermath/reaksi setelahnya jika masih kurang
+4. Jika setelah semua langkah di atas tetap tidak bisa mencapai 60s: SKIP
 
 Untuk setiap clip, generate:
 1. start_time dan end_time (dalam detik) — WAJIB dalam range ideal untuk moment_type-nya
@@ -139,8 +217,8 @@ Output HANYA JSON valid. TIDAK ADA teks di luar JSON. Schema:
 {
   "clips": [
     {
-      "start_time": 12.5,
-      "end_time": 75.2,
+      "start_time": 120.0,
+      "end_time": 190.0,
       "viral_score": 87,
       "moment_type": "clutch",
       "titles": ["Judul 1", "Judul 2", "Judul 3"],
@@ -154,8 +232,12 @@ Output HANYA JSON valid. TIDAK ADA teks di luar JSON. Schema:
   "summary": "Ringkasan singkat video/stream ini"
 }
 
-Identifikasi 5-15 clip terbaik. Minimum viral_score untuk diinclude: 60.
-Urutkan clips dari viral_score tertinggi ke terendah."""
+Identifikasi 5-20 clip terbaik — jangan lewatkan momen yang menarik hanya karena skornya tidak sempurna.
+Minimum viral_score untuk diinclude: 50.
+Urutkan clips dari viral_score tertinggi ke terendah.
+
+PERINGATAN: Jangan terlalu selektif. Lebih baik 15 clip dengan skor 50–80 daripada hanya 5 clip dengan skor 80+.
+Semua clip HARUS >= 60 detik. Clip di bawah 60 detik otomatis DITOLAK."""
 
 
 class AIBrainService:
@@ -207,9 +289,13 @@ class AIBrainService:
                 logger.warning(f"Skipping {provider['name']} — no API key configured")
                 continue
             try:
-                logger.info(f"Trying provider: {provider['name']} / {provider['model']}")
+                logger.info(
+                    f"Trying provider: {provider['name']} / {provider['model']}"
+                )
                 result = await self._call_provider(provider, messages, max_tokens)
-                logger.info(f"Success: {provider['name']} ({result['tokens_used']} tokens)")
+                logger.info(
+                    f"Success: {provider['name']} ({result['tokens_used']} tokens)"
+                )
                 return (
                     result["content"],
                     result["provider_name"],
@@ -218,18 +304,21 @@ class AIBrainService:
                 )
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
-                logger.warning(f"{provider['name']} HTTP {status} — trying next provider")
+                logger.warning(
+                    f"{provider['name']} HTTP {status} — trying next provider"
+                )
                 last_error = e
-                if status not in (429, 500, 502, 503, 504):
-                    # Don't fall through for unexpected auth / not-found errors
+                # 413 = payload too large → try next provider (may have higher limit)
+                # 4xx auth/not-found errors (except 413/429) → stop immediately
+                if status not in (413, 429, 500, 502, 503, 504):
                     break
             except (httpx.TimeoutException, httpx.ConnectError) as e:
-                logger.warning(f"{provider['name']} connection error: {e} — trying next provider")
+                logger.warning(
+                    f"{provider['name']} connection error: {e} — trying next provider"
+                )
                 last_error = e
 
-        raise RuntimeError(
-            f"All AI providers failed. Last error: {last_error}"
-        )
+        raise RuntimeError(f"All AI providers failed. Last error: {last_error}")
 
     async def analyze_transcript(
         self,
@@ -241,10 +330,22 @@ class AIBrainService:
         """Analyze transcript and return viral clip suggestions."""
         start = time.perf_counter()
 
-        segments_text = "\n".join(
+        # Build segments text — cap at ~70k chars to stay within provider context limits.
+        # For very long videos (streams, etc.) sample across the full duration instead of truncating.
+        MAX_SEGMENTS_CHARS = 70_000
+        all_segments_lines = [
             f"[{seg.start:.1f}s - {seg.end:.1f}s]: {seg.text}"
             for seg in transcript.segments
-        )
+        ]
+        segments_text = "\n".join(all_segments_lines)
+        if len(segments_text) > MAX_SEGMENTS_CHARS:
+            # Sample uniformly across segments to preserve context from whole video
+            total = len(all_segments_lines)
+            step = max(1, total // 800)  # keep ~800 lines
+            sampled = all_segments_lines[::step]
+            segments_text = "[NOTE: transcript sampled uniformly due to length]\n" + "\n".join(sampled)
+            # Final safety truncate
+            segments_text = segments_text[:MAX_SEGMENTS_CHARS]
 
         context_parts = []
         if game_title:
@@ -275,22 +376,32 @@ Full text:
             {"role": "user", "content": user_message},
         ]
 
-        content, provider_name, model_used, tokens_used = await self._call_with_fallback(
-            messages, max_tokens=4000
-        )
+        (
+            content,
+            provider_name,
+            model_used,
+            tokens_used,
+        ) = await self._call_with_fallback(messages, max_tokens=4000)
 
         # If JSON is malformed, retry once with explicit instruction
         clips_data = self._try_parse_clips(content)
         if clips_data is None:
-            logger.warning("First parse failed, retrying with explicit JSON instruction")
-            messages.append({"role": "assistant", "content": content})
-            messages.append({
-                "role": "user",
-                "content": "Output di atas bukan JSON valid. Coba lagi — output HANYA JSON valid, tidak ada teks lain.",
-            })
-            content, provider_name, model_used, tokens_used = await self._call_with_fallback(
-                messages, max_tokens=4000
+            logger.warning(
+                "First parse failed, retrying with explicit JSON instruction"
             )
+            messages.append({"role": "assistant", "content": content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Output di atas bukan JSON valid. Coba lagi — output HANYA JSON valid, tidak ada teks lain.",
+                }
+            )
+            (
+                content,
+                provider_name,
+                model_used,
+                tokens_used,
+            ) = await self._call_with_fallback(messages, max_tokens=4000)
             clips_data = self._try_parse_clips(content)
 
         elapsed = time.perf_counter() - start
@@ -351,14 +462,42 @@ Full text:
             return None
 
     def _parse_clip_suggestions(self, data: dict) -> List[ClipSuggestion]:
-        """Parse dict into ClipSuggestion objects, sorted by viral_score desc."""
+        """Parse dict into ClipSuggestion objects, sorted by viral_score desc.
+
+        Layer 2 validation: reject clips outside YouTube Shorts duration range.
+        """
         clips = []
+        too_long = 0
+        too_short_warn = 0
         for item in data.get("clips", []):
             try:
+                start = float(item["start_time"])
+                end = float(item["end_time"])
+                duration = end - start
+                # Hard reject only clips > 180s (YouTube Shorts hard limit).
+                # Clips < 60s are passed through — pipeline._validate_clip_durations
+                # will extend them before the final cut. Only truly unsalvageable
+                # clips (< 20s) are rejected here to avoid wasting pipeline time.
+                if duration > SHORTS_MAX_DURATION:
+                    too_long += 1
+                    logger.debug(
+                        f"Clip rejected: too long ({duration:.1f}s > {SHORTS_MAX_DURATION}s)"
+                    )
+                    continue
+                if duration < 20:
+                    too_short_warn += 1
+                    logger.debug(
+                        f"Clip rejected: too short to salvage ({duration:.1f}s)"
+                    )
+                    continue
+                if duration < SHORTS_MIN_DURATION:
+                    logger.debug(
+                        f"Clip under-duration ({duration:.1f}s) — passing to pipeline for extension"
+                    )
                 clips.append(
                     ClipSuggestion(
-                        start_time=float(item["start_time"]),
-                        end_time=float(item["end_time"]),
+                        start_time=start,
+                        end_time=end,
                         viral_score=int(item.get("viral_score", 50)),
                         moment_type=item.get("moment_type", "epic"),
                         titles=item.get("titles", [item.get("title", "Untitled")]),
@@ -371,6 +510,10 @@ Full text:
                 )
             except (KeyError, ValueError, TypeError) as e:
                 logger.warning(f"Skipping malformed clip item: {e}")
+        skipped = too_long + too_short_warn
+        if skipped:
+            logger.info(
+                f"Duration filter: {too_short_warn} unsalvageable (<20s), "
+                f"{too_long} too long (>{SHORTS_MAX_DURATION}s) — total skipped: {skipped}"
+            )
         return sorted(clips, key=lambda c: c.viral_score, reverse=True)
-
-

@@ -315,7 +315,7 @@ export default function CropConfigPage() {
               <span style={{ width: 3, height: 14, background: "var(--primary)", borderRadius: 2, display: "inline-block" }} />
               Mode Crop
             </h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12 }}>
               {(Object.keys(CROP_MODE_INFO) as CropMode[]).map((mode) => {
                 const info = CROP_MODE_INFO[mode];
                 const active = config.default_vertical_crop_mode === mode;
@@ -324,7 +324,7 @@ export default function CropConfigPage() {
                     key={mode}
                     onClick={() => updateMode(mode)}
                     style={{
-                      padding: "16px 14px",
+                      padding: `${info.recommended ? 38 : 16}px 14px 16px`,
                       borderRadius: 12,
                       border: active
                         ? "2px solid var(--primary)"
@@ -334,16 +334,18 @@ export default function CropConfigPage() {
                       textAlign: "left",
                       transition: "all 0.15s",
                       position: "relative",
+                      overflow: "hidden",
                     }}
                   >
                     {info.recommended && (
                       <span style={{
-                        position: "absolute", top: 10, right: 10,
+                        position: "absolute", top: 0, left: 0, right: 0,
                         fontSize: 9, fontWeight: 700, color: "var(--secondary)",
-                        background: "rgba(0,212,170,0.12)",
-                        border: "1px solid rgba(0,212,170,0.3)",
-                        borderRadius: 99, padding: "1px 6px",
+                        background: "rgba(0,212,170,0.1)",
+                        borderBottom: "1px solid rgba(0,212,170,0.2)",
+                        padding: "5px 10px",
                         textTransform: "uppercase", letterSpacing: "0.05em",
+                        display: "flex", alignItems: "center", gap: 4,
                       }}>
                         ★ Recommended
                       </span>
@@ -370,7 +372,7 @@ export default function CropConfigPage() {
             <div style={{
               padding: "16px 20px",
               background: "var(--bg-2)", border: "1px solid var(--border-1)", borderRadius: 12,
-              display: "flex", alignItems: "flex-start", gap: 16,
+              display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap",
             }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)", marginBottom: 4 }}>
@@ -418,7 +420,7 @@ export default function CropConfigPage() {
                   color: detecting ? "var(--text-4)" : "var(--secondary)",
                   cursor: detecting || !latestVideoId ? "not-allowed" : "pointer",
                   whiteSpace: "nowrap",
-                  alignSelf: "flex-end",
+                  flexShrink: 0,
                 }}
               >
                 {detecting ? <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Scan size={14} />}
@@ -614,7 +616,11 @@ export default function CropConfigPage() {
                       {profile.vertical_crop_mode.replace(/_/g, " ")}
                     </span>
                     {profile.aliases.length > 0 && (
-                      <span style={{ fontSize: 11, color: "var(--text-4)", fontFamily: "var(--font-mono)" }}>
+                      <span style={{
+                        fontSize: 11, color: "var(--text-4)", fontFamily: "var(--font-mono)",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        maxWidth: 140, flexShrink: 1, minWidth: 0,
+                      }}>
                         {profile.aliases.slice(0, 2).join(", ")}
                       </span>
                     )}
@@ -625,7 +631,7 @@ export default function CropConfigPage() {
           )}
 
           {/* ── Save Button ───────────────────────────────────────────── */}
-          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <button
               onClick={handleSave}
               disabled={saving}

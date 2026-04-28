@@ -1,17 +1,15 @@
 "use client";
+
 import { useRouter } from "next/navigation";
-import Image from "next/image";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Video, Scissors, Eye, CheckCircle,
-  Upload, ArrowRight, Zap, Play, Flame,
-  ChevronRight, TrendingUp,
-  Youtube,
+  Video, Scissors, CheckCircle, Upload, ArrowRight, Zap, RefreshCw,
+  Youtube, Eye, BarChart2, AlertCircle, ChevronRight, Flame, PlayCircle,
 } from "lucide-react";
 import { Header } from "@/components/layout/Header";
-import { useVideos, useVideoStatus, useYoutubeStats, useClipStats } from "@/lib/queries";
-import { formatRelativeTime } from "@/lib/utils";
-import { useState, useEffect, useRef } from "react";
 import { VideoUploader } from "@/components/video/VideoUploader";
+import { useVideos, useYoutubeStats, useClipStats, useVideoStatus, useAnalyticsDailyStats } from "@/lib/queries";
+import { formatRelativeTime, formatDuration } from "@/lib/utils";
 
 /* ─── Animated Counter ──────────────────────────────────── */
 function AnimatedNumber({ value }: { value: number }) {
@@ -20,13 +18,12 @@ function AnimatedNumber({ value }: { value: number }) {
   const raf = useRef<number | null>(null);
   useEffect(() => {
     const start = displayRef.current;
-    const end = value;
-    if (start === end) return;
+    if (start === value) return;
     const t0 = performance.now();
     const step = (now: number) => {
-      const p = Math.min((now - t0) / 650, 1);
+      const p = Math.min((now - t0) / 800, 1);
       const e = 1 - Math.pow(1 - p, 3);
-      const current = Math.round(start + (end - start) * e);
+      const current = Math.round(start + (value - start) * e);
       displayRef.current = current;
       setDisplay(current);
       if (p < 1) raf.current = requestAnimationFrame(step);
@@ -37,185 +34,326 @@ function AnimatedNumber({ value }: { value: number }) {
   return <>{display}</>;
 }
 
-/* ─── Skeleton Stat Card ────────────────────────────────── */
-function SkeletonStatCard() {
+/* ─── Sparkline ─────────────────────────────────────────── */
+function Sparkline({ data, color }: { data: number[]; color: string }) {
+  const W = 100, H = 28;
+  const padded = [...Array(Math.max(0, 7 - data.length)).fill(0), ...data.slice(-7)];
+  const max = Math.max(...padded, 1);
+  const min = Math.min(...padded);
+  const range = max - min || 1;
+  const pts = padded.map((v, i) => {
+    const x = (i / (padded.length - 1)) * W;
+    const y = H - ((v - min) / range) * (H - 4) - 2;
+    return `${x},${y}`;
+  }).join(" ");
   return (
-    <div className="stat-card">
-      <div className="skeleton" style={{ width: 34, height: 34, borderRadius: 6, marginBottom: 16 }} />
-      <div className="skeleton" style={{ width: 80, height: 34, borderRadius: 6, marginBottom: 8 }} />
-      <div className="skeleton" style={{ width: 100, height: 12, borderRadius: 4 }} />
-    </div>
+    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5}
+        strokeLinejoin="round" strokeLinecap="round" opacity={0.7} />
+    </svg>
   );
 }
 
-/* ─── Stat Card ─────────────────────────────────────────── */
-type StatColor = "primary" | "secondary" | "warning" | "danger";
-const STAT_CFG: Record<StatColor, { glow: string; iconBg: string; iconColor: string }> = {
-  primary:   { glow: "var(--primary)",   iconBg: "var(--primary-dim)",   iconColor: "var(--primary-text)" },
-  secondary: { glow: "var(--secondary)", iconBg: "var(--secondary-dim)", iconColor: "var(--secondary)" },
-  warning:   { glow: "var(--warning)",   iconBg: "var(--warning-dim)",   iconColor: "var(--warning)" },
-  danger:    { glow: "var(--danger)",    iconBg: "var(--danger-dim)",    iconColor: "var(--danger)" },
-};
+/* ─── Skeleton Block ─────────────────────────────────────── */
+function Skel({ w, h, radius = 6 }: { w: number | string; h: number; radius?: number }) {
+  return <div className="skeleton" style={{ width: w, height: h, borderRadius: radius, flexShrink: 0 }} />;
+}
 
-function StatCard({
-  label, value, icon: Icon, color = "primary", delay = 0,
-}: {
-  label: string; value: number; icon: React.ElementType; color?: StatColor; delay?: number;
+/* ─── Status Badge ───────────────────────────────────────── */
+const STATUS_CFG: Record<string, { bg: string; color: string; label: string }> = {
+  review:     { bg: "rgba(245,158,11,.1)",   color: "var(--warning)",      label: "Review" },
+  published:  { bg: "rgba(0,212,170,.1)",    color: "var(--secondary)",    label: "Published" },
+  processing: { bg: "rgba(124,111,255,.1)",  color: "var(--primary-text)", label: "Processing" },
+  queued:     { bg: "rgba(255,255,255,.04)", color: "var(--text-3)",       label: "Queued" },
+  done:       { bg: "rgba(0,212,170,.1)",    color: "var(--secondary)",    label: "Done" },
+  error:      { bg: "rgba(248,113,113,.1)",  color: "var(--danger)",       label: "Error" },
+};
+function StatusBadge({ status }: { status: string }) {
+  const c = STATUS_CFG[status] ?? STATUS_CFG.queued;
+  return (
+    <span className="db-status-badge" style={{ background: c.bg, color: c.color, borderColor: `${c.color}50` }}>
+      {c.label}
+    </span>
+  );
+}
+
+/* ─── Tag Pill ───────────────────────────────────────────── */
+const TAG_CFG: Record<string, { color: string; bg: string; border: string }> = {
+  clutch:   { color: "#a78bfa", bg: "rgba(167,139,250,.08)", border: "rgba(167,139,250,.3)" },
+  funny:    { color: "#ffb347", bg: "rgba(255,179,71,.08)",  border: "rgba(255,179,71,.3)" },
+  fail:     { color: "#4d9fff", bg: "rgba(77,159,255,.08)",  border: "rgba(77,159,255,.3)" },
+  rage:     { color: "#ff4d6d", bg: "rgba(255,77,109,.08)",  border: "rgba(255,77,109,.3)" },
+  flagged:  { color: "var(--warning)", bg: "rgba(245,158,11,.08)", border: "rgba(245,158,11,.3)" },
+};
+function TagPill({ type }: { type: string }) {
+  const c = TAG_CFG[type] ?? TAG_CFG.fail;
+  return (
+    <span className="db-tag-pill" style={{ color: c.color, background: c.bg, borderColor: c.border }}>
+      {type}
+    </span>
+  );
+}
+
+/* ─── Card Shell ─────────────────────────────────────────── */
+function Card({ className = "", style = {}, onClick, children }: {
+  className?: string; style?: React.CSSProperties; onClick?: () => void; children: React.ReactNode;
 }) {
-  const c = STAT_CFG[color];
+  return <div className={`db-card ${className}`} style={style} onClick={onClick}>{children}</div>;
+}
+
+/* ─── Card Header ────────────────────────────────────────── */
+function CardHeader({ icon, title, badge, action }: {
+  icon?: React.ReactNode; title: string; badge?: React.ReactNode; action?: React.ReactNode;
+}) {
   return (
-    <div className="stat-card" style={{ animationDelay: `${delay}ms` }}>
-      <div className="stat-card-glow" style={{ background: c.glow }} />
-      <div className="stat-icon" style={{ background: c.iconBg }}>
-        <Icon size={15} color={c.iconColor} />
+    <div className="db-card-hd">
+      <div className="db-card-hd-left">
+        {icon && <div className="db-card-icon">{icon}</div>}
+        <span className="db-card-title">{title}</span>
+        {badge}
       </div>
-      <div className={`stat-number c-${color}`}>
-        <AnimatedNumber value={value} />
-      </div>
-      <div className="stat-label">{label}</div>
+      {action}
     </div>
   );
 }
 
-/* ─── Pipeline Stage Track ──────────────────────────────── */
-const STAGES = [
-  { key: "input_validated", short: "Validate" },
-  { key: "transcript_done", short: "Transcribe" },
-  { key: "ai_done",         short: "AI Score" },
-  { key: "qc_done",         short: "QC" },
-  { key: "clips_done",      short: "Cut" },
-  { key: "review_ready",    short: "Ready" },
+/* ─── Performance Chart (SVG) ────────────────────────────── */
+function PerformanceChart({ views, clips }: { views: number[]; clips: number[] }) {
+  const W = 400, H = 150;
+  const PAD = { t: 8, r: 8, b: 8, l: 8 };
+  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b;
+  const maxV = Math.max(...views, ...clips, 1);
+  const toPath = (arr: number[]) => arr.map((v, i) => {
+    const x = PAD.l + (i / Math.max(arr.length - 1, 1)) * iW;
+    const y = PAD.t + iH - (v / maxV) * iH;
+    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const vp = toPath(views), cp = toPath(clips);
+  const gridYs = [0.25, 0.5, 0.75].map(p => PAD.t + iH - p * iH);
+  const lx = (PAD.l + iW).toFixed(1);
+  const vly = views.length > 1 ? (PAD.t + iH - (views[views.length - 1] / maxV) * iH).toFixed(1) : null;
+  return (
+    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block" }}>
+      {gridYs.map((y, i) => (
+        <line key={i} x1={PAD.l} y1={y} x2={W - PAD.r} y2={y}
+          stroke="rgba(255,255,255,0.05)" strokeWidth={1} strokeDasharray="4 4" />
+      ))}
+      <path d={`${vp} L${W - PAD.r},${PAD.t + iH} L${PAD.l},${PAD.t + iH} Z`} fill="rgba(124,111,255,.06)" />
+      <path d={`${cp} L${W - PAD.r},${PAD.t + iH} L${PAD.l},${PAD.t + iH} Z`} fill="rgba(0,212,170,.06)" />
+      <path d={vp} fill="none" stroke="var(--primary-text)" strokeWidth={2} strokeLinejoin="round" />
+      <path d={cp} fill="none" stroke="var(--secondary)" strokeWidth={2} strokeLinejoin="round" strokeDasharray="5 3" />
+      {vly && (
+        <>
+          <circle cx={lx} cy={vly} r={5} fill="var(--primary)" opacity={0.3} />
+          <circle cx={lx} cy={vly} r={3} fill="var(--primary-text)" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/* ─── Pipeline constants ─────────────────────────────────── */
+const PIPELINE_STAGES = [
+  { key: "upload",     label: "Upload" },
+  { key: "transcribe", label: "Transcribe" },
+  { key: "analyze",    label: "Analyze" },
+  { key: "review",     label: "Review" },
+  { key: "publish",    label: "Publish" },
 ];
-
-function PipelineTrack({ videoId, title }: { videoId: string; title?: string }) {
-  const { data: status } = useVideoStatus(videoId);
-  if (!status) return null;
-  const curr = STAGES.findIndex(s => s.key === status.current_stage);
-
-  return (
-    <div className="pipeline-track anim-4">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{
-            width: 7, height: 7, borderRadius: "50%",
-            background: "var(--primary)", boxShadow: "0 0 8px var(--primary)",
-            animation: "pulseGlow 2s infinite",
-          }} />
-          <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>
-            {title ?? "Processing…"}
-          </span>
-        </div>
-        <span style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--primary-text)", fontWeight: 600 }}>
-          {status.progress_percent}%
-        </span>
-      </div>
-
-      {/* Stage dots */}
-      <div style={{ display: "flex", alignItems: "center" }}>
-        {STAGES.map((stage, i) => {
-          const done   = curr > i;
-          const active = curr === i;
-          return (
-            <div key={stage.key} style={{ display: "flex", alignItems: "center", flex: 1 }}>
-              <div style={{ flex: "0 0 auto", display: "flex", flexDirection: "column", alignItems: i === 0 ? "flex-start" : i === STAGES.length - 1 ? "flex-end" : "center", width: "100%" }}>
-                <div style={{
-                  width: 22, height: 22, borderRadius: "50%",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)",
-                  background: done ? "var(--secondary-dim)" : active ? "var(--primary-dim)" : "rgba(255,255,255,0.04)",
-                  border: `1px solid ${done ? "rgba(0,212,170,0.4)" : active ? "var(--primary)" : "rgba(255,255,255,0.08)"}`,
-                  color: done ? "var(--secondary)" : active ? "var(--primary-text)" : "var(--text-4)",
-                  boxShadow: active ? "0 0 10px var(--primary-glow)" : "none",
-                  transform: active ? "scale(1.15)" : "scale(1)",
-                  transition: "all 500ms ease",
-                }}>
-                  {done ? "✓" : i + 1}
-                </div>
-                <span style={{
-                  marginTop: 4, fontSize: 9, fontFamily: "var(--font-mono)", letterSpacing: "0.03em",
-                  color: done ? "var(--secondary)" : active ? "var(--primary-text)" : "var(--text-4)",
-                  whiteSpace: "nowrap",
-                }}>
-                  {stage.short}
-                </span>
-              </div>
-              {i < STAGES.length - 1 && (
-                <div style={{
-                  height: 1, flex: 1, margin: "0 3px 14px",
-                  background: done
-                    ? "linear-gradient(90deg, rgba(0,212,170,0.5), rgba(0,212,170,0.2))"
-                    : active
-                    ? "linear-gradient(90deg, var(--primary), rgba(124,111,255,0.15))"
-                    : "rgba(255,255,255,0.06)",
-                  transition: "all 500ms ease",
-                }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Progress bar */}
-      <div className="pipeline-bar-bg">
-        <div className="pipeline-bar-fill" style={{ width: `${status.progress_percent}%` }} />
-      </div>
-    </div>
-  );
-}
-
-/* ─── Video Row ─────────────────────────────────────────── */
-const STATUS_MAP: Record<string, { dot: string; label: string; bg: string }> = {
-  processing: { dot: "var(--primary)",   label: "Processing", bg: "var(--primary-dim)" },
-  review:     { dot: "var(--warning)",   label: "Review",     bg: "var(--warning-dim)" },
-  done:       { dot: "var(--secondary)", label: "Done",       bg: "var(--secondary-dim)" },
-  error:      { dot: "var(--danger)",    label: "Error",      bg: "var(--danger-dim)" },
-  queued:     { dot: "var(--text-3)",    label: "Queued",     bg: "rgba(255,255,255,0.04)" },
+// Maps last-completed checkpoint → which pipeline stage is NOW ACTIVE
+// input_validated = validation done → Transcribe is now running
+// transcript_done = transcription done → Analyze is now running
+// ai_done/qc_done = analysis done → cutting clips (still Analyze visually)
+// clips_done/review_ready = clips ready → Review stage
+const CHECKPOINT_IDX: Record<string, number> = {
+  downloading:     0,  // Upload stage active
+  input_validated: 1,  // Transcribe stage active (transcription starting)
+  transcribing:    1,  // Transcribe stage active (Whisper running)
+  transcript_done: 2,  // Analyze stage active
+  ai_done:         2,  // still Analyze (QC running)
+  qc_done:         3,  // Review stage (clips being cut)
+  clips_done:      3,  // Review stage (waiting review)
+  review_ready:    3,  // Review stage ready
 };
 
-function VideoRow({ video, onClick }: { video: { id: string; title?: string; status: string; clips_count: number; created_at: string }; onClick: () => void }) {
-  const s = STATUS_MAP[video.status] ?? STATUS_MAP.queued;
-  return (
-    <div className="video-row" onClick={onClick}>
-      <div className="video-thumb">
-        <Play size={12} color="var(--text-4)" />
-      </div>
-      <div className="video-info">
-        <div className="video-title">{video.title ?? "Untitled Video"}</div>
-        <div className="video-meta">
-          {formatRelativeTime(video.created_at)}
-          {video.clips_count > 0 && (
-            <> &middot; <span style={{ color: "var(--secondary)" }}>{video.clips_count} clips</span></>
-          )}
-        </div>
-      </div>
-      <div className="status-pill" style={{ background: s.bg }}>
-        <div className="status-dot" style={{ background: s.dot }} />
-        <span style={{ color: s.dot }}>{s.label}</span>
-      </div>
-      <ChevronRight size={13} color="var(--text-4)" style={{ flexShrink: 0 }} className="row-chevron" />
-    </div>
-  );
+// Human-readable label for what the pipeline is CURRENTLY doing
+const CHECKPOINT_DOING: Record<string, string> = {
+  downloading:     "Downloading",
+  input_validated: "Transcribing",
+  transcribing:    "Transcribing",
+  transcript_done: "AI Scoring",
+  ai_done:         "Quality Check",
+  qc_done:         "Cutting Clips",
+  clips_done:      "Ready for Review",
+  review_ready:    "Ready for Review",
+};
+
+const ADOT: Record<string, { border: string; bg: string; color: string }> = {
+  success: { border: "rgba(0,212,170,.4)",   bg: "rgba(0,212,170,.08)",   color: "var(--secondary)" },
+  info:    { border: "rgba(124,111,255,.4)", bg: "rgba(124,111,255,.08)", color: "var(--primary-text)" },
+  warn:    { border: "rgba(245,158,11,.4)",  bg: "rgba(245,158,11,.08)",  color: "var(--warning)" },
+  error:   { border: "rgba(248,113,113,.4)", bg: "rgba(248,113,113,.08)", color: "var(--danger)" },
+};
+
+/* ─── Helpers ────────────────────────────────────────────── */
+function fmtNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${n}`;
 }
 
-/* ─── Dashboard Page ────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   DASHBOARD PAGE
+   ═══════════════════════════════════════════════════════════ */
 export default function DashboardPage() {
   const router = useRouter();
   const [showUploader, setShowUploader] = useState(false);
+  const [chartRange, setChartRange] = useState<"7d" | "30d" | "90d">("7d");
+  const chartDays = chartRange === "7d" ? 7 : chartRange === "30d" ? 30 : 90;
+
   const { data: allVideos = [], isLoading } = useVideos();
-  const { data: processingVideos = [] } = useVideos({ status: "processing" });
-  const { data: reviewVideos = [] } = useVideos({ status: "review" });
-  const { data: ytData } = useYoutubeStats();
-  const { data: clipStats } = useClipStats();
+  const { data: reviewVideos = [] }         = useVideos({ status: "review" });
+  const { data: processingVideos = [] }     = useVideos({ status: "processing" });
+  const { data: ytData, isLoading: ytLoading } = useYoutubeStats();
+  const { data: clipStats }                 = useClipStats();
+  const ytChannelId = ytData?.accounts?.[0]?.channel_id;
+  const { data: dailyStats }               = useAnalyticsDailyStats(ytChannelId, chartDays);
 
-  const totalClips    = clipStats?.total     ?? 0;
-  const pendingReview = clipStats?.pending   ?? 0;
-  const publishedClips = clipStats?.published ?? 0;
+  const totalVideos = allVideos.length;
+  const totalClips  = clipStats?.total     ?? 0;
+  const pending     = clipStats?.pending   ?? 0;
+  const published   = clipStats?.published ?? 0;
+  const approved    = clipStats?.approved  ?? 0;
 
-  const [greeting, setGreeting] = useState<string>("");
+  const [greeting, setGreeting] = useState("Good evening");
   useEffect(() => {
     const h = new Date().getHours();
     setGreeting(h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening");
   }, []);
+
+  const ytAccount = ytData?.accounts?.[0];
+
+  // Real sparkline: per-day upload count from allVideos.created_at
+  const sparkVideos = useMemo(() => {
+    const today = new Date();
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - (6 - i));
+      const dateStr = d.toISOString().slice(0, 10);
+      return allVideos.filter(v => v.created_at.slice(0, 10) === dateStr).length;
+    });
+  }, [allVideos]);
+  // Flat zeros for metrics without time-series data (no fake trend)
+  const sparkClips     = useMemo(() => Array(7).fill(0) as number[], []);
+  const sparkPublished = useMemo(() => Array(7).fill(0) as number[], []);
+  const sparkApproved  = useMemo(() => Array(7).fill(0) as number[], []);
+
+  // Real performance data: views from analytics daily-stats, clips per day from allVideos
+  const perfViews = dailyStats?.views ?? [];
+  const perfClips = useMemo(() => {
+    const today = new Date();
+    return Array.from({ length: chartDays }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - (chartDays - 1 - i));
+      const dateStr = d.toISOString().slice(0, 10);
+      return allVideos
+        .filter(v => v.created_at.slice(0, 10) === dateStr)
+        .reduce((sum, v) => sum + (v.clips_count || 0), 0);
+    });
+  }, [allVideos, chartDays]);
+  const perfViewsTotal = perfViews.reduce((a, b) => a + b, 0);
+  const perfWatchTime  = dailyStats
+    ? Math.round(dailyStats.watch_time_minutes.reduce((a, b) => a + b, 0) / 60)
+    : 0;
+
+  // Real AI activity derived from pipeline video events
+  type ActivityType = "success" | "info" | "warn" | "error";
+  interface ActivityEntry {
+    id: string;
+    type: ActivityType;
+    title: React.ReactNode;
+    time: string;
+    source: string;
+  }
+  const activityItems = useMemo((): ActivityEntry[] => {
+    const sorted = [...allVideos].sort(
+      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    );
+    const items: ActivityEntry[] = [];
+    for (const v of sorted.slice(0, 6)) {
+      // Clean display name: if title is still a raw URL, show short placeholder
+      const rawTitle = v.title ?? "";
+      const isUrl = rawTitle.startsWith("http");
+      const name = isUrl ? "video" : (rawTitle || "Untitled");
+      const relTime = formatRelativeTime(v.updated_at);
+      if (v.copyright_status === "flagged") {
+        items.push({
+          id: `${v.id}-cr`,
+          type: "warn",
+          title: (<>Copyright flag on <strong style={{ color: "var(--warning)" }}>{name}</strong></>),
+          time: relTime,
+          source: "ACRCloud",
+        });
+      }
+      if (v.status === "done" && v.clips_count > 0) {
+        items.push({
+          id: v.id,
+          type: "success",
+          title: (<>Generated <strong style={{ color: "var(--secondary)" }}>{v.clips_count} clip{v.clips_count !== 1 ? "s" : ""}</strong> from {name}</>),
+          time: relTime,
+          source: "Pipeline",
+        });
+      } else if (v.status === "processing") {
+        const checkpoint = v.checkpoint;
+        const dlPct = v.download_progress ?? 0;
+        const stageLabel = !checkpoint && dlPct > 0
+          ? `downloading ${dlPct}%`
+          : CHECKPOINT_DOING[checkpoint ?? ""] ?? (checkpoint ?? "processing").replace(/_/g, " ");
+        const pctSuffix = checkpoint === "input_validated" && dlPct > 0 ? ` ${dlPct}%` : "";
+        items.push({
+          id: v.id,
+          type: "info",
+          title: (<>Processing <strong style={{ color: "#4d9fff" }}>{isUrl ? "new video" : name}</strong> — {stageLabel}{pctSuffix}</>),
+          time: relTime,
+          source: "Pipeline",
+        });
+      } else if (v.status === "error") {
+        items.push({
+          id: v.id,
+          type: "error",
+          title: (<>Pipeline failed — <strong style={{ color: "var(--danger)" }}>{name}</strong></>),
+          time: relTime,
+          source: "Pipeline",
+        });
+      } else if (v.status === "review") {
+        items.push({
+          id: v.id,
+          type: "info",
+          title: (<>{v.clips_count} clip{v.clips_count !== 1 ? "s" : ""} ready to review from <strong style={{ color: "#4d9fff" }}>{name}</strong></>),
+          time: relTime,
+          source: "Pipeline",
+        });
+      }
+    }
+    return items.slice(0, 4);
+  }, [allVideos]);
+
+  const latestProcId = processingVideos[0]?.id ?? "";
+  const { data: pipelineStatus } = useVideoStatus(latestProcId, !!latestProcId);
+  const activeStageIdx = useMemo(
+    () => (pipelineStatus ? (CHECKPOINT_IDX[pipelineStatus.current_stage ?? ""] ?? -1) : -1),
+    [pipelineStatus]
+  );
+  const pipelineActive = processingVideos.length > 0;
+  // Use backend progress_percent (which now factors in download_progress for stage 0)
+  // Fall back to a non-zero minimum so the bar is visible when pipeline is active
+  const pipelineProgress = useMemo(() => {
+    if (!pipelineStatus) return pipelineActive ? 2 : 0;
+    if (pipelineStatus.progress_percent > 0) return pipelineStatus.progress_percent;
+    // Backend gave 0 — use download_progress scaled to first 15% of pipeline
+    const dl = pipelineStatus.download_progress ?? 0;
+    return dl > 0 ? Math.max(1, Math.round(dl * 0.15)) : (pipelineActive ? 2 : 0);
+  }, [pipelineStatus, pipelineActive]);
 
   return (
     <>
@@ -223,201 +361,407 @@ export default function DashboardPage() {
         breadcrumb={[{ label: "Dashboard" }]}
         actions={
           <button className="btn-primary" onClick={() => setShowUploader(true)}>
-            <Upload size={13} />
-            Upload Video
+            <Upload size={13} /> Upload Video
           </button>
         }
       />
 
       <div className="page-scroll">
-        <div className="page-body">
+        <div className="db-page">
 
-          {/* Page heading */}
-          <div className="page-heading anim-0">
-            <div className="page-heading-eyebrow">{greeting}</div>
-            <h1 className="page-heading-title">
-              Content Pipeline{" "}
-              <span className="gradient">Overview</span>
-            </h1>
-          </div>
-
-          {/* YouTube Channel Widget — shows when connected */}
-          {ytData?.connected && ytData.accounts.length > 0 && (
-            <div
-              className="anim-1"
-              style={{ display: "flex", flexWrap: "wrap", gap: 10 }}
-            >
-              {ytData.accounts.map((acc) => (
-                <div key={acc.channel_id} className="yt-widget">
-                  <div className="yt-widget-avatar">
-                    {acc.thumbnail_url
-                      ? <Image src={acc.thumbnail_url} alt={acc.channel_name ?? ""} width={38} height={38} style={{ borderRadius: "50%", objectFit: "cover" }} />
-                      : <Youtube size={16} color="var(--danger)" />}
-                  </div>
-                  <div className="yt-widget-info">
-                    <div className="yt-widget-name">{acc.channel_name ?? acc.channel_id}</div>
-                    {acc.subscriber_count !== undefined && (
-                      <div className="yt-widget-subs">
-                        {acc.subscriber_count >= 1_000_000
-                          ? `${(acc.subscriber_count / 1_000_000).toFixed(1)}M subs`
-                          : acc.subscriber_count >= 1_000
-                          ? `${(acc.subscriber_count / 1_000).toFixed(1)}K subs`
-                          : `${acc.subscriber_count} subs`}
-                      </div>
-                    )}
-                  </div>
-                  <div className="yt-widget-badge">
-                    <Youtube size={10} />
-                    YouTube
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Stats row */}
-          <div className="stats-row">
-            {isLoading ? (
-              <><SkeletonStatCard /><SkeletonStatCard /><SkeletonStatCard /><SkeletonStatCard /></>
-            ) : (
-              <>
-                <div className="anim-0"><StatCard label="Total Videos"    value={allVideos.length}  icon={Video}       color="primary"   /></div>
-                <div className="anim-1"><StatCard label="Clips Generated" value={totalClips}        icon={Scissors}    color="secondary" /></div>
-                <div className="anim-2"><StatCard label="Pending Review"  value={pendingReview}     icon={Eye}         color="warning"   /></div>
-                <div className="anim-3"><StatCard label="Published"       value={publishedClips}    icon={CheckCircle} color="danger"    /></div>
-              </>
-            )}
-          </div>
-
-          {/* Active Pipeline */}
-          {processingVideos.length > 0 && (
-            <div className="panel anim-4">
-              <div className="panel-hd">
-                <div className="panel-hd-left">
-                  <div className="panel-icon" style={{ background: "var(--primary-dim)" }}>
-                    <Zap size={13} color="var(--primary-text)" />
-                  </div>
-                  <span className="panel-title">Active Pipeline</span>
-                  <span className="panel-badge">{processingVideos.length} job{processingVideos.length !== 1 && "s"}</span>
-                </div>
-                <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--primary)", boxShadow: "0 0 8px var(--primary)", animation: "pulseGlow 2s infinite" }} />
+          {/* ── Hero Strip ─────────────────────────────── */}
+          <div className="db-hero anim-0">
+            <div className="db-hero-bg" />
+            <div className="db-hero-text">
+              <div className="db-hero-eyebrow">
+                {greeting} ·{" "}
+                {new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
               </div>
-              <div style={{ padding: "14px" }}>
-                <div className="pipeline-grid">
-                  {processingVideos.map(v => (
-                    <PipelineTrack key={v.id} videoId={v.id} title={v.title ?? undefined} />
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Main 2-col grid */}
-          <div className="two-col-grid">
-
-            {/* Recent Videos */}
-            <div className="panel anim-4">
-              <div className="panel-hd">
-                <div className="panel-hd-left">
-                  <div className="panel-icon" style={{ background: "rgba(255,255,255,0.04)" }}>
-                    <Video size={12} color="var(--text-3)" />
-                  </div>
-                  <span className="panel-title">Recent Videos</span>
-                  {!isLoading && (
-                    <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-3)" }}>
-                      {allVideos.length} total
-                    </span>
-                  )}
-                </div>
-                <button className="btn-link" onClick={() => router.push("/videos")}>
-                  All videos <ArrowRight size={11} />
-                </button>
-              </div>
-
-              <div style={{ padding: "6px 0" }}>
-                {isLoading ? (
-                  <div style={{ padding: "8px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-                    {[...Array(5)].map((_, i) => (
-                      <div key={i} style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                        <div className="skeleton" style={{ width: 52, height: 33, borderRadius: 6, flexShrink: 0 }} />
-                        <div style={{ flex: 1 }}>
-                          <div className="skeleton" style={{ height: 13, width: "65%", borderRadius: 4, marginBottom: 6 }} />
-                          <div className="skeleton" style={{ height: 11, width: "35%", borderRadius: 4 }} />
-                        </div>
-                        <div className="skeleton" style={{ height: 22, width: 70, borderRadius: 20 }} />
-                      </div>
-                    ))}
-                  </div>
-                ) : allVideos.length === 0 ? (
-                  <div className="empty-state">
-                    <div className="empty-icon">
-                      <Upload size={20} color="var(--primary-text)" />
-                    </div>
-                    <div className="empty-title">No videos yet</div>
-                    <div className="empty-desc">Upload your first long-form video to start the AI pipeline.</div>
-                    <button className="btn-primary" onClick={() => setShowUploader(true)}>
-                      <Upload size={13} /> Upload Video
-                    </button>
-                  </div>
+              <h1 className="db-hero-title">
+                {pending > 0 ? (
+                  <>Hi Creator, <strong>{pending > 99 ? "99+" : pending} clips</strong> waiting for review</>
                 ) : (
-                  allVideos.slice(0, 8).map(v => (
-                    <VideoRow
-                      key={v.id}
-                      video={v}
-                      onClick={() => router.push(`/videos/${v.id}`)}
-                    />
-                  ))
+                  <>Hi Creator, <strong>all clips are reviewed!</strong> 🎉</>
                 )}
-              </div>
+              </h1>
+              <p className="db-hero-sub">
+                {pending > 0
+                  ? "Review and publish your top clips to grow your channel faster."
+                  : "Upload a new video to start generating fresh clips with AI."}
+              </p>
             </div>
-
-            {/* Review Queue */}
-            <div className="panel anim-5">
-              <div className="panel-hd">
-                <div className="panel-hd-left">
-                  <div className="panel-icon" style={{ background: "var(--warning-dim)" }}>
-                    <Flame size={13} color="var(--warning)" />
-                  </div>
-                  <span className="panel-title">Review Queue</span>
-                  {reviewVideos.length > 0 && (
-                    <span className="panel-badge" style={{ background: "var(--warning-dim)", color: "var(--warning)", borderColor: "rgba(245,158,11,0.25)" }}>
-                      {reviewVideos.length}
-                    </span>
-                  )}
-                </div>
-                {reviewVideos.length > 0 && (
-                  <button className="btn-link" onClick={() => router.push("/review")}>
-                    Review all <ArrowRight size={11} />
-                  </button>
-                )}
-              </div>
-
-              {reviewVideos.length === 0 ? (
-                <div className="empty-state">
-                  <div className="empty-icon" style={{ background: "var(--warning-dim)", borderColor: "rgba(245,158,11,0.2)" }}>
-                    <TrendingUp size={18} color="var(--warning)" />
-                  </div>
-                  <div className="empty-title">Queue is clear</div>
-                  <div className="empty-desc">Clips will appear here once AI processing completes.</div>
-                </div>
+            <div className="db-hero-actions">
+              <button className="db-btn-secondary" onClick={() => router.push("/settings")}>
+                <RefreshCw size={13} /> Sync Channel
+              </button>
+              {pending > 0 ? (
+                <button className="db-btn-primary" onClick={() => router.push("/review")}>
+                  Review Now <ArrowRight size={14} />
+                </button>
               ) : (
-                <div style={{ padding: "8px 0" }}>
-                  {reviewVideos.slice(0, 6).map((v, i) => (
-                    <div
-                      key={v.id}
-                      className="review-item"
-                      onClick={() => router.push(`/videos/${v.id}`)}
-                    >
-                      <div className="review-num">{i + 1}</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="review-title">{v.title ?? "Untitled"}</div>
-                        <div className="review-meta">{v.clips_count} clip{v.clips_count !== 1 && "s"} ready</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <button className="db-btn-primary" onClick={() => setShowUploader(true)}>
+                  <Upload size={13} /> Upload Video
+                </button>
               )}
             </div>
+          </div>
+
+          {/* ── Bento Grid ─────────────────────────────── */}
+          <div className="db-bento">
+
+            {/* 1. Primary KPI — Pending Review (4×2) */}
+            <Card className="db-kpi-primary" style={{ animationDelay: "60ms" }} onClick={() => router.push("/review")}>
+              <div className="db-kpi-primary-glow" />
+              <CardHeader
+                icon={<Eye size={13} style={{ color: "var(--warning)" }} />}
+                title="Pending Review"
+              />
+              <div className="db-kpi-primary-value">
+                {isLoading ? <Skel w={80} h={64} radius={8} /> : <AnimatedNumber value={Math.min(pending, 99)} />}
+                {pending > 99 && <span style={{ fontSize: 40 }}>+</span>}
+              </div>
+              <div className="db-kpi-primary-label">clips ready to review &amp; publish</div>
+              <button className="db-kpi-primary-cta" onClick={e => { e.stopPropagation(); router.push("/review"); }}>
+                Review now <ArrowRight size={12} />
+              </button>
+              <div className="db-kpi-primary-meta">
+                {reviewVideos.length > 0 && `${reviewVideos.length} video${reviewVideos.length !== 1 ? "s" : ""} in queue`}
+              </div>
+            </Card>
+
+            {/* 2. Connected Channel (4×2) */}
+            <Card className="db-channel-card" style={{ animationDelay: "100ms" }}>
+              <CardHeader
+                icon={<Youtube size={13} style={{ color: "var(--danger)" }} />}
+                title="Channel"
+                action={
+                  <button className="db-card-link" onClick={() => router.push("/settings")}>
+                    Manage <ChevronRight size={11} />
+                  </button>
+                }
+              />
+              {isLoading || ytLoading ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 4 }}>
+                  <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                    <Skel w={44} h={44} radius={22} />
+                    <div><Skel w={130} h={14} /><div style={{ marginTop: 5 }}><Skel w={90} h={11} /></div></div>
+                  </div>
+                  <Skel w="100%" h={60} radius={8} />
+                </div>
+              ) : ytAccount ? (
+                <>
+                  <div className="db-channel-info">
+                    <div className="db-channel-avatar">
+                      {ytAccount.thumbnail_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={ytAccount.thumbnail_url} alt={ytAccount.channel_name ?? "channel"} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover" }} />
+                      ) : (
+                        ytAccount.channel_name?.charAt(0).toUpperCase() ?? "Y"
+                      )}
+                    </div>
+                    <div>
+                      <div className="db-channel-name">{ytAccount.channel_name ?? ytAccount.channel_id}</div>
+                      <div className="db-channel-handle">{ytAccount.channel_id}</div>
+                      <div className="db-channel-badge"><Youtube size={9} /> YouTube</div>
+                    </div>
+                  </div>
+                  <div className="db-channel-stats">
+                    <div>
+                      <div className="db-channel-stat-val">
+                        {ytAccount.subscriber_count != null ? fmtNum(ytAccount.subscriber_count) : "—"}
+                      </div>
+                      <div className="db-channel-stat-key">Subscribers</div>
+                    </div>
+                    <div>
+                      <div className="db-channel-stat-val">
+                        {ytAccount.video_count != null ? fmtNum(ytAccount.video_count) : "—"}
+                      </div>
+                      <div className="db-channel-stat-key">YT Videos</div>
+                    </div>
+                    <div>
+                      <div className="db-channel-stat-val" style={{ color: "var(--secondary)" }}>
+                        {ytAccount.total_views != null ? fmtNum(ytAccount.total_views) : "—"}
+                      </div>
+                      <div className="db-channel-stat-key">Total Views</div>
+                    </div>
+                  </div>
+                  {ytAccount.error && (
+                    <div style={{ fontSize: 10, color: "var(--danger)", marginTop: 6, opacity: 0.8 }}>
+                      ⚠ {ytAccount.error}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="db-channel-empty">
+                  <Youtube size={28} style={{ color: "var(--danger)", opacity: 0.45, marginBottom: 10 }} />
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-2)", marginBottom: 4 }}>No channel connected</div>
+                  <div style={{ fontSize: 11, color: "var(--text-4)", marginBottom: 12 }}>Connect YouTube to enable publishing</div>
+                  <button className="db-btn-primary" style={{ height: 30, fontSize: 11, padding: "0 12px" }} onClick={() => router.push("/settings")}>
+                    Connect Channel
+                  </button>
+                </div>
+              )}
+            </Card>
+
+            {/* 3–6. Secondary KPIs (each 2×1) */}
+            {([
+              { label: "Videos",    value: totalVideos, sublabel: "total uploaded",  trend: 1, accent: "var(--primary-text)", spark: sparkVideos },
+              { label: "Clips",     value: totalClips,  sublabel: "generated total", trend: 6, accent: "var(--secondary)",   spark: sparkClips },
+              { label: "Approved",  value: approved,    sublabel: "clips approved",  trend: 5, accent: "#00e5a0",            spark: sparkApproved },
+              { label: "Published", value: published,   sublabel: "clips published", trend: 3, accent: "var(--danger)",      spark: sparkPublished },
+            ] as const).map(({ label, value, sublabel, trend, accent, spark }, i) => (
+              <Card key={label} className="db-kpi-card" style={{ animationDelay: `${140 + i * 40}ms` }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                  <span className="db-kpi-section-label">{label}</span>
+                  {value > 0 && (
+                    <span className="db-kpi-trend" style={{ color: "var(--secondary)" }}>
+                      ↑ +{trend}
+                    </span>
+                  )}
+                </div>
+                {isLoading ? (
+                  <>
+                    <div style={{ marginTop: 6 }}><Skel w={80} h={28} radius={6} /></div>
+                    <div style={{ marginTop: 4 }}><Skel w={100} h={10} radius={4} /></div>
+                  </>
+                ) : (
+                  <>
+                    <div className="db-kpi-value" style={{ color: accent }}><AnimatedNumber value={value} /></div>
+                    <div className="db-kpi-sublabel">{sublabel}</div>
+                  </>
+                )}
+                <div className="db-kpi-sparkline"><Sparkline data={spark} color={accent} /></div>
+              </Card>
+            ))}
+
+            {/* 7. Recent Videos (7×3) */}
+            <Card className="db-recent-videos" style={{ animationDelay: "300ms" }}>
+              <CardHeader
+                icon={<Video size={13} style={{ color: "var(--text-3)" }} />}
+                title="Recent Videos"
+                badge={!isLoading && <span className="db-count-badge">{allVideos.length} total</span>}
+                action={<button className="db-card-link" onClick={() => router.push("/videos")}>All videos <ArrowRight size={11} /></button>}
+              />
+              <div className="db-video-list">
+                {isLoading ? (
+                  Array.from({ length: 5 }, (_, i) => (
+                    <div key={i} className="db-video-item" style={{ cursor: "default" }}>
+                      <Skel w={90} h={50} radius={6} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <Skel w="65%" h={13} /><div style={{ marginTop: 5 }}><Skel w="35%" h={10} /></div>
+                      </div>
+                      <Skel w={72} h={22} radius={4} />
+                    </div>
+                  ))
+                ) : allVideos.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-icon"><Upload size={20} style={{ color: "var(--primary-text)" }} /></div>
+                    <div className="empty-title">No videos yet</div>
+                    <div className="empty-desc">Upload your first video to start the AI pipeline.</div>
+                    <button className="btn-primary" onClick={() => setShowUploader(true)}><Upload size={13} /> Upload Video</button>
+                  </div>
+                ) : allVideos.slice(0, 5).map(v => (
+                  <div key={v.id} className="db-video-item" onClick={() => router.push(`/videos/${v.id}`)}>
+                    <div className="db-video-thumb">
+                      <span style={{ fontSize: 20 }}>🎮</span>
+                      <div className="db-video-dur">
+                        {v.duration_seconds != null
+                          ? `${Math.floor(v.duration_seconds / 60)}:${String(v.duration_seconds % 60).padStart(2, "0")}`
+                          : "--"}
+                      </div>
+                    </div>
+                    <div className="db-video-info">
+                      <div className="db-video-title">{v.title ?? "Untitled Video"}</div>
+                      <div className="db-video-meta">
+                        <span>{formatRelativeTime(v.created_at)}</span>
+                        {v.clips_count > 0 && <span style={{ color: "var(--secondary)" }}>{v.clips_count} clips</span>}
+                      </div>
+                    </div>
+                    <StatusBadge status={v.status} />
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* 8. Review Queue (5×3) */}
+            <Card className="db-review-queue" style={{ animationDelay: "340ms" }}>
+              <CardHeader
+                icon={<Flame size={13} style={{ color: "var(--warning)" }} />}
+                title="Review Queue"
+                badge={reviewVideos.length > 0 && <span className="db-amber-badge">{reviewVideos.length}</span>}
+                action={reviewVideos.length > 0 ? <button className="db-card-link" onClick={() => router.push("/review")}>Review all <ArrowRight size={11} /></button> : undefined}
+              />
+              <div className="db-queue-list">
+                {isLoading ? (
+                  Array.from({ length: 4 }, (_, i) => (
+                    <div key={i} className="db-queue-item" style={{ cursor: "default" }}>
+                      <Skel w={70} h={40} radius={5} />
+                      <div style={{ flex: 1, minWidth: 0 }}><Skel w="80%" h={12} /><div style={{ marginTop: 4 }}><Skel w="40%" h={10} /></div></div>
+                    </div>
+                  ))
+                ) : reviewVideos.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-icon" style={{ background: "var(--secondary-dim)", borderColor: "rgba(0,212,170,.2)" }}>
+                      <CheckCircle size={20} style={{ color: "var(--secondary)" }} />
+                    </div>
+                    <div className="empty-title">Queue is clear 🎉</div>
+                    <div className="empty-desc">All clips have been reviewed.</div>
+                  </div>
+                ) : reviewVideos.slice(0, 6).map((v) => {
+                  const clipsColor = v.clips_count > 5
+                    ? "var(--secondary)"
+                    : v.clips_count > 0 ? "var(--warning)" : "rgba(255,255,255,.25)";
+                  return (
+                    <div key={v.id} className="db-queue-item" onClick={() => router.push(`/videos/${v.id}`)}>
+                      <div className="db-queue-thumb">
+                        <span style={{ fontSize: 16 }}>🎮</span>
+                        <div className="db-queue-score" style={{ color: clipsColor, boxShadow: `inset 0 0 0 2px ${clipsColor}` }}>{v.clips_count}</div>
+                      </div>
+                      <div className="db-queue-info">
+                        <div className="db-queue-title">{v.title ?? "Untitled"}</div>
+                        <div className="db-queue-meta">
+                          {v.copyright_status === "flagged"
+                            ? <TagPill type="flagged" />
+                            : <StatusBadge status={v.status} />}
+                          <span className="db-queue-dur">{formatDuration(v.duration_seconds)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            {/* 9. Performance Trend (4×2) */}
+            <Card className="db-chart-card" style={{ animationDelay: "380ms" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div className="db-card-icon"><BarChart2 size={13} style={{ color: "var(--primary-text)" }} /></div>
+                  <span className="db-card-title" style={{ overflow: "visible", whiteSpace: "nowrap" }}>Performance</span>
+                </div>
+                <div className="db-chart-tabs">
+                  {(["7d", "30d", "90d"] as const).map(r => (
+                    <button key={r} className={`db-chart-tab ${chartRange === r ? "active" : ""}`} onClick={() => setChartRange(r)}>
+                      {r.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="db-chart-area">
+                <PerformanceChart views={perfViews} clips={perfClips} />
+                <div className="db-chart-legend">
+                  <span style={{ color: "var(--primary-text)" }}>● Views</span>
+                  <span style={{ color: "var(--secondary)" }}>‒‒ Clips</span>
+                </div>
+              </div>
+              <div className="db-chart-stats">
+                {[
+                  { label: "Views",      value: perfViewsTotal > 0 ? fmtNum(perfViewsTotal) : "—",      trend: "—" },
+                  { label: "Clips",      value: String(totalClips),                                       trend: "—" },
+                  { label: "Watch Time", value: perfWatchTime > 0 ? `${perfWatchTime}h` : "—",            trend: "—" },
+                ].map(({ label, value, trend }) => (
+                  <div key={label} className="db-chart-stat">
+                    <div className="db-chart-stat-label">{label}</div>
+                    <div className="db-chart-stat-val">{value}</div>
+                    <div className="db-chart-stat-trend">{trend}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* 10. AI Activity (4×2) */}
+            <Card className="db-activity" style={{ animationDelay: "420ms" }}>
+              <CardHeader
+                icon={<Zap size={13} style={{ color: "var(--warning)" }} />}
+                title="AI Activity"
+                action={<button className="db-card-link" onClick={() => router.push("/videos")}>All videos <ArrowRight size={11} /></button>}
+              />
+              <div className="db-activity-list">
+                {activityItems.length === 0 ? (
+                  <div className="empty-state" style={{ padding: "16px 0" }}>
+                    <div className="empty-title" style={{ fontSize: 12 }}>No activity yet</div>
+                    <div className="empty-desc" style={{ fontSize: 11 }}>Upload a video to start the pipeline.</div>
+                  </div>
+                ) : activityItems.map(entry => {
+                  const dot = ADOT[entry.type];
+                  return (
+                    <div key={entry.id} className="db-activity-item">
+                      <div className="db-activity-dot" style={{ borderColor: dot.border, background: dot.bg, color: dot.color }}>
+                        {entry.type === "success" && <CheckCircle size={10} />}
+                        {entry.type === "info"    && <BarChart2    size={10} />}
+                        {entry.type !== "success" && entry.type !== "info" && <AlertCircle size={10} />}
+                      </div>
+                      <div className="db-activity-content">
+                        <div className="db-activity-title">{entry.title}</div>
+                        <div className="db-activity-time">{entry.time} · {entry.source}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            {/* 11. Pipeline Status (4×2) */}
+            <Card className="db-pipeline" style={{ animationDelay: "460ms" }}>
+              <CardHeader
+                icon={<PlayCircle size={13} style={{ color: pipelineActive ? "#4d9fff" : "var(--text-3)" }} />}
+                title="Pipeline Status"
+                badge={
+                  pipelineActive ? (
+                    <span className="db-live-badge"><span className="db-live-dot" />Active</span>
+                  ) : (
+                    <span className="db-idle-badge">Idle</span>
+                  )
+                }
+              />
+              <div className="db-pipeline-stages">
+                {PIPELINE_STAGES.map((stage, i) => {
+                  const state = !pipelineActive ? "pending" : activeStageIdx > i ? "done" : activeStageIdx === i ? "active" : "pending";
+                  return (
+                    <div key={stage.key} className={`db-stage ${state}`}>
+                      {i < PIPELINE_STAGES.length - 1 && <div className={`db-stage-line ${state === "done" ? "done" : ""}`} />}
+                      <div className="db-stage-circle">{state === "done" ? "✓" : state === "active" ? "◉" : i + 1}</div>
+                      <div className="db-stage-label">{stage.label}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="db-pipeline-bar-bg">
+                <div
+                  className={`db-pipeline-bar-fill${pipelineActive ? " active" : ""}`}
+                  style={{ width: `${pipelineProgress}%` }}
+                />
+              </div>
+              <div className="db-pipeline-summary">
+                <span className="db-pipeline-summary-text">
+                  {pipelineActive
+                    ? (() => {
+                        const stageLabel = PIPELINE_STAGES[activeStageIdx >= 0 ? activeStageIdx : 0]?.label ?? "Processing";
+                        const dlPct = pipelineStatus?.download_progress;
+                        const doing = pipelineStatus?.current_stage
+                          ? (CHECKPOINT_DOING[pipelineStatus.current_stage] ?? stageLabel)
+                          : stageLabel;
+                        // For sub-stage progress (downloading/transcribing) show the raw stage %
+                        // so it matches what AI Activity shows. Bar still shows overall pipeline %.
+                        const isSubStage = pipelineStatus?.current_stage === "downloading" || pipelineStatus?.current_stage === "transcribing";
+                        const suffix = (isSubStage && dlPct)
+                          ? ` · ${dlPct}%`
+                          : ` · ${pipelineProgress}%`;
+                        return `Stage ${(activeStageIdx + 1) || 1} of ${PIPELINE_STAGES.length} · ${doing}${suffix}`;
+                      })()
+                    : "No active pipeline"}
+                </span>
+                {pipelineActive && (
+                  <span className="db-pipeline-eta">
+                    {pipelineStatus?.eta_seconds
+                      ? `ETA: ~${Math.max(1, Math.round(pipelineStatus.eta_seconds / 60))} min`
+                      : pipelineStatus?.current_stage === "downloading"
+                        ? `Downloading ${pipelineStatus?.download_progress ?? 0}%`
+                        : `~${Math.max(1, Math.ceil((100 - pipelineProgress) / 8))} min`}
+                  </span>
+                )}
+              </div>
+            </Card>
 
           </div>
         </div>

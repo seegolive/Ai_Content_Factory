@@ -1,9 +1,9 @@
 """FFmpeg-based video processing service: cut, resize, subtitle, QC."""
+
 import asyncio
 import os
 import subprocess
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from loguru import logger
@@ -32,12 +32,23 @@ def _test_nvenc_encoder(codec: str) -> bool:
     try:
         test = subprocess.run(
             [
-                "ffmpeg", "-y",
-                "-f", "lavfi", "-i", "color=black:s=1280x720:r=25:d=0.1",
-                "-c:v", codec, "-frames:v", "2",
-                "-f", "null", "-"
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=1280x720:r=25:d=0.1",
+                "-c:v",
+                codec,
+                "-frames:v",
+                "2",
+                "-f",
+                "null",
+                "-",
             ],
-            capture_output=True, text=True, timeout=15
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return test.returncode == 0
     except Exception:
@@ -49,7 +60,9 @@ def _detect_best_encoder() -> str:
     try:
         result = subprocess.run(
             ["ffmpeg", "-encoders", "-hide_banner"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         encoders = result.stdout
         # Prefer AV1 NVENC (RTX 40xx) — smaller files, better quality
@@ -88,11 +101,31 @@ def get_encode_params(source_height: int) -> dict:
 def build_video_encode_flags(encoder: str, params: dict) -> list:
     """Return FFmpeg video encode flags for the given encoder."""
     if encoder == "av1_nvenc":
-        return ["-c:v", "av1_nvenc", "-rc:v", "vbr", "-cq:v", params["cq"],
-                "-b:v", params["bitrate"], "-maxrate:v", str(int(params["bitrate"][:-1]) * 2) + "M"]
+        return [
+            "-c:v",
+            "av1_nvenc",
+            "-rc:v",
+            "vbr",
+            "-cq:v",
+            params["cq"],
+            "-b:v",
+            params["bitrate"],
+            "-maxrate:v",
+            str(int(params["bitrate"][:-1]) * 2) + "M",
+        ]
     elif encoder == "h264_nvenc":
-        return ["-c:v", "h264_nvenc", "-rc:v", "vbr", "-cq:v", params["cq"],
-                "-b:v", params["bitrate"], "-maxrate:v", str(int(params["bitrate"][:-1]) * 2) + "M"]
+        return [
+            "-c:v",
+            "h264_nvenc",
+            "-rc:v",
+            "vbr",
+            "-cq:v",
+            params["cq"],
+            "-b:v",
+            params["bitrate"],
+            "-maxrate:v",
+            str(int(params["bitrate"][:-1]) * 2) + "M",
+        ]
     else:
         return ["-c:v", "libx264", "-crf", params["crf"], "-preset", params["preset"]]
 
@@ -102,13 +135,37 @@ def build_cpu_encode_flags(params: dict) -> list:
     return ["-c:v", "libx264", "-crf", params["crf"], "-preset", params["preset"]]
 
 
+def _seek_args(start_time: Optional[float], end_time: Optional[float]) -> list:
+    """Build FFmpeg input-seek args for a combined cut+process single pass.
+
+    Both args go BEFORE -i so FFmpeg uses fast input seeking.
+    -ss {start}  → seek to start position
+    -to {end}    → stop reading at this absolute source timestamp
+    """
+    args: list = []
+    if start_time is not None and start_time > 0:
+        args += ["-ss", f"{start_time:.3f}"]
+    if end_time is not None:
+        args += ["-to", f"{end_time:.3f}"]
+    return args
+
+
 async def _get_video_height(video_path: str) -> int:
     """Probe video height using ffprobe."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet", "-select_streams", "v:0",
-            "-show_entries", "stream=height", "-of", "csv=p=0", video_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=height",
+            "-of",
+            "csv=p=0",
+            video_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
         return int(stdout.decode().strip()) if stdout.strip() else 1080
@@ -117,7 +174,6 @@ async def _get_video_height(video_path: str) -> int:
 
 
 class VideoProcessorService:
-
     async def cut_clip(
         self,
         input_path: str,
@@ -134,11 +190,18 @@ class VideoProcessorService:
         """
         # Stream copy: fastest possible cut, no GPU/CPU encode needed
         cmd_copy = [
-            "ffmpeg", "-y",
-            "-ss", str(start_time), "-to", str(end_time),
-            "-i", input_path,
-            "-c", "copy",
-            "-movflags", "+faststart",
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(start_time),
+            "-to",
+            str(end_time),
+            "-i",
+            input_path,
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
             output_path,
         ]
         try:
@@ -153,7 +216,16 @@ class VideoProcessorService:
         encoder = get_encoder()
 
         cmd = (
-            ["ffmpeg", "-y", "-ss", str(start_time), "-to", str(end_time), "-i", input_path]
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                str(start_time),
+                "-to",
+                str(end_time),
+                "-i",
+                input_path,
+            ]
             + build_video_encode_flags(encoder, params)
             + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
         )
@@ -163,9 +235,26 @@ class VideoProcessorService:
             if encoder in ("av1_nvenc", "h264_nvenc"):
                 logger.warning(f"NVENC cut failed, falling back to libx264: {e}")
                 cmd_cpu = (
-                    ["ffmpeg", "-y", "-ss", str(start_time), "-to", str(end_time), "-i", input_path]
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-ss",
+                        str(start_time),
+                        "-to",
+                        str(end_time),
+                        "-i",
+                        input_path,
+                    ]
                     + build_cpu_encode_flags(params)
-                    + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+                    + [
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        "192k",
+                        "-movflags",
+                        "+faststart",
+                        output_path,
+                    ]
                 )
                 await self._run_ffmpeg(cmd_cpu)
             else:
@@ -211,8 +300,12 @@ class VideoProcessorService:
             try:
                 await self._run_ffmpeg(cmd)
             except VideoProcessingError as e:
-                if encoder in ("av1_nvenc", "h264_nvenc") and ("cuda" in str(e).lower() or "nvenc" in str(e).lower()):
-                    logger.warning(f"NVENC failed for {platform}, falling back to libx264")
+                if encoder in ("av1_nvenc", "h264_nvenc") and (
+                    "cuda" in str(e).lower() or "nvenc" in str(e).lower()
+                ):
+                    logger.warning(
+                        f"NVENC failed for {platform}, falling back to libx264"
+                    )
                     cmd_cpu = (
                         ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
                         + build_cpu_encode_flags(params)
@@ -250,9 +343,16 @@ class VideoProcessorService:
         )
 
         cmd = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-vf", f"subtitles={srt_path}:force_style='{force_style}'",
-            "-c:v", "libx264", "-c:a", "copy",
+            "ffmpeg",
+            "-y",
+            "-i",
+            input_path,
+            "-vf",
+            f"subtitles={srt_path}:force_style='{force_style}'",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "copy",
             output_path,
         ]
         await self._run_ffmpeg(cmd)
@@ -271,9 +371,14 @@ class VideoProcessorService:
 
         # Silence detection
         silence_cmd = [
-            "ffmpeg", "-i", clip_path,
-            "-af", "silencedetect=noise=-30dB:d=3",
-            "-f", "null", "-",
+            "ffmpeg",
+            "-i",
+            clip_path,
+            "-af",
+            "silencedetect=noise=-30dB:d=3",
+            "-f",
+            "null",
+            "-",
         ]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -286,15 +391,25 @@ class VideoProcessorService:
             silence_count = stderr_text.count("silence_start")
             metrics["silence_segments"] = silence_count
             if silence_count > 0:
-                issues.append(QCIssue(type="silence", description=f"Found {silence_count} silence segment(s) > 3s"))
+                issues.append(
+                    QCIssue(
+                        type="silence",
+                        description=f"Found {silence_count} silence segment(s) > 3s",
+                    )
+                )
         except Exception as e:
             logger.warning(f"Silence detection failed: {e}")
 
         # Audio peak level check
         loudnorm_cmd = [
-            "ffmpeg", "-i", clip_path,
-            "-af", "loudnorm=print_format=json",
-            "-f", "null", "-",
+            "ffmpeg",
+            "-i",
+            clip_path,
+            "-af",
+            "loudnorm=print_format=json",
+            "-f",
+            "null",
+            "-",
         ]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -307,14 +422,27 @@ class VideoProcessorService:
             stderr_text = stderr.decode()
             if '"input_tp"' in stderr_text:
                 import re
+
                 tp_match = re.search(r'"input_tp"\s*:\s*"([-\d.]+)"', stderr_text)
                 if tp_match:
                     peak_db = float(tp_match.group(1))
                     metrics["peak_db"] = peak_db
                     if peak_db > 0.0:
-                        issues.append(QCIssue(type="clipping", description=f"Audio peak too high: {peak_db:.1f}dB", severity="error"))
+                        issues.append(
+                            QCIssue(
+                                type="clipping",
+                                description=f"Audio peak too high: {peak_db:.1f}dB",
+                                severity="error",
+                            )
+                        )
                     elif peak_db > -1.0:
-                        issues.append(QCIssue(type="clipping", description=f"Audio peak near clipping: {peak_db:.1f}dB", severity="warning"))
+                        issues.append(
+                            QCIssue(
+                                type="clipping",
+                                description=f"Audio peak near clipping: {peak_db:.1f}dB",
+                                severity="warning",
+                            )
+                        )
         except Exception as e:
             logger.warning(f"Loudnorm check failed: {e}")
 
@@ -327,11 +455,16 @@ class VideoProcessorService:
         output_path: str,
         game_profile=None,
         channel_config=None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> str:
         """
         Convert 16:9 source (typically 2560x1440) → 1080x1920 9:16 vertical.
         Uses game-specific crop mode from GameCropProfile.
         Falls back to blur_pillarbox if no profile provided.
+
+        When start_time/end_time are provided, the cut and crop are combined
+        into a single FFmpeg pass (no intermediate horizontal file).
         """
         source_h = channel_config.obs_canvas_height if channel_config else 1440
         source_w = channel_config.obs_canvas_width if channel_config else 2560
@@ -343,20 +476,39 @@ class VideoProcessorService:
             or "blur_pillarbox"
         )
 
-        logger.info(f"[VideoProcessor] resize_to_vertical mode={mode} src={source_w}x{source_h}")
+        logger.info(
+            f"[VideoProcessor] resize_to_vertical mode={mode} src={source_w}x{source_h}"
+            + (f" [{start_time:.1f}s–{end_time:.1f}s]" if start_time is not None else "")
+        )
         if mode == "smart_offset":
-            return await self._crop_smart_offset(input_path, output_path, game_profile, source_w, source_h)
+            return await self._crop_smart_offset(
+                input_path, output_path, game_profile, source_w, source_h, start_time, end_time
+            )
         elif mode == "dual_zone":
-            return await self._crop_dual_zone(input_path, output_path, game_profile, source_w, source_h)
+            return await self._crop_dual_zone(
+                input_path, output_path, game_profile, source_w, source_h, start_time, end_time
+            )
         elif mode == "center_crop":
-            return await self._crop_center(input_path, output_path, source_w, source_h)
+            return await self._crop_center(
+                input_path, output_path, source_w, source_h, start_time, end_time
+            )
         elif mode == "blur_letterbox":
-            return await self._crop_blur_letterbox(input_path, output_path, source_w, source_h)
+            return await self._crop_blur_letterbox(
+                input_path, output_path, source_w, source_h, start_time, end_time
+            )
         else:
-            return await self._crop_blur_pillarbox(input_path, output_path, source_w, source_h)
+            return await self._crop_blur_pillarbox(
+                input_path, output_path, source_w, source_h, start_time, end_time
+            )
 
     async def _crop_center(
-        self, input_path: str, output_path: str, source_w: int, source_h: int
+        self,
+        input_path: str,
+        output_path: str,
+        source_w: int,
+        source_h: int,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> str:
         """
         Simple center crop: take the 9:16 portion from the middle of the 16:9 frame.
@@ -371,8 +523,9 @@ class VideoProcessorService:
         encoder = get_encoder()
         params = {"cq": "18", "crf": "18", "preset": "medium", "bitrate": "8M"}
         vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=1080:1920"
+        seek = _seek_args(start_time, end_time)
         cmd = (
-            ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+            ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
             + build_video_encode_flags(encoder, params)
             + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
         )
@@ -382,7 +535,7 @@ class VideoProcessorService:
             if encoder in ("av1_nvenc", "h264_nvenc"):
                 logger.warning(f"NVENC center crop failed, falling back: {e}")
                 cmd_cpu = (
-                    ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+                    ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
                     + build_cpu_encode_flags(params)
                     + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
                 )
@@ -392,7 +545,13 @@ class VideoProcessorService:
         return output_path
 
     async def _crop_blur_letterbox(
-        self, input_path: str, output_path: str, source_w: int, source_h: int
+        self,
+        input_path: str,
+        output_path: str,
+        source_w: int,
+        source_h: int,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> str:
         """
         Shorts-style blur letterbox (9:16 canvas = 1080x1920):
@@ -427,8 +586,9 @@ class VideoProcessorService:
         )
         # Use NVENC for encoding (GPU). Decode stays on CPU because software filters
         # (split, boxblur, overlay) require CPU frames — hwaccel cuda would break them.
+        seek = _seek_args(start_time, end_time)
         cmd = (
-            ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+            ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
             + build_video_encode_flags(encoder, params)
             + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
         )
@@ -438,7 +598,7 @@ class VideoProcessorService:
             if encoder in ("av1_nvenc", "h264_nvenc"):
                 logger.warning(f"NVENC blur_letterbox failed, falling back to CPU: {e}")
                 cmd_cpu = (
-                    ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+                    ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
                     + build_cpu_encode_flags(params)
                     + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
                 )
@@ -448,7 +608,13 @@ class VideoProcessorService:
         return output_path
 
     async def _crop_blur_pillarbox(
-        self, input_path: str, output_path: str, source_w: int, source_h: int
+        self,
+        input_path: str,
+        output_path: str,
+        source_w: int,
+        source_h: int,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> str:
         """
         Default safe mode: 16:9 video centred with blurred pillarbox sides → 1080x1920.
@@ -463,8 +629,9 @@ class VideoProcessorService:
             "[original]scale=1080:-2[scaled];"
             "[blurred][scaled]overlay=(W-w)/2:(H-h)/2"
         )
+        seek = _seek_args(start_time, end_time)
         cmd = (
-            ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+            ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
             + build_video_encode_flags(encoder, params)
             + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
         )
@@ -474,7 +641,7 @@ class VideoProcessorService:
             if encoder in ("av1_nvenc", "h264_nvenc"):
                 logger.warning(f"NVENC pillarbox failed, falling back: {e}")
                 cmd_cpu = (
-                    ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+                    ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
                     + build_cpu_encode_flags(params)
                     + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
                 )
@@ -484,13 +651,20 @@ class VideoProcessorService:
         return output_path
 
     async def _crop_smart_offset(
-        self, input_path: str, output_path: str, profile, source_w: int, source_h: int
+        self,
+        input_path: str,
+        output_path: str,
+        profile,
+        source_w: int,
+        source_h: int,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> str:
         """
         Crop an 810px-wide strip from the 2560px source (default from left)
         then scale to 1080x1920. Facecam in the top-left corner is preserved.
         """
-        crop_h = source_h          # 1440
+        crop_h = source_h  # 1440
         crop_w = int(source_h * 9 / 16)  # 810
 
         anchor = (profile.crop_anchor if profile else None) or "left"
@@ -507,8 +681,9 @@ class VideoProcessorService:
         encoder = get_encoder()
         params = {"cq": "18", "crf": "18", "preset": "medium", "bitrate": "8M"}
         vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=1080:1920"
+        seek = _seek_args(start_time, end_time)
         cmd = (
-            ["ffmpeg", "-y", "-i", input_path, "-vf", vf]
+            ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
             + build_video_encode_flags(encoder, params)
             + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
         )
@@ -516,7 +691,14 @@ class VideoProcessorService:
         return output_path
 
     async def _crop_dual_zone(
-        self, input_path: str, output_path: str, profile, source_w: int, source_h: int
+        self,
+        input_path: str,
+        output_path: str,
+        profile,
+        source_w: int,
+        source_h: int,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> str:
         """
         Split 1080x1920 into:
@@ -535,7 +717,9 @@ class VideoProcessorService:
         fc_w = (profile.facecam_width if profile else None) or source_w
         fc_h = (profile.facecam_height if profile else None) or int(source_h * split)
 
-        gp_center_x = (profile.gameplay_crop_center_x if profile else None) or (source_w // 2)
+        gp_center_x = (profile.gameplay_crop_center_x if profile else None) or (
+            source_w // 2
+        )
         gp_crop_h = source_h - fc_h
         gp_crop_w = max(1, int(gp_crop_h * out_w / gp_zone_h))
         gp_x = max(0, gp_center_x - gp_crop_w // 2)
@@ -549,10 +733,11 @@ class VideoProcessorService:
             f"[0:v]crop={gp_crop_w}:{gp_crop_h}:{gp_x}:{gp_y},scale={out_w}:{gp_zone_h}[gp];"
             f"[fc][gp]vstack=inputs=2[output]"
         )
+        seek = _seek_args(start_time, end_time)
         cmd = (
-            ["ffmpeg", "-y", "-i", input_path,
-             "-filter_complex", filter_complex,
-             "-map", "[output]", "-map", "0:a"]
+            ["ffmpeg", "-y"]
+            + seek
+            + ["-i", input_path, "-filter_complex", filter_complex, "-map", "[output]", "-map", "0:a"]
             + build_video_encode_flags(encoder, params)
             + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
         )
@@ -567,7 +752,9 @@ class VideoProcessorService:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=1800)  # 30 min
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=1800
+            )  # 30 min
         except asyncio.TimeoutError:
             proc.kill()
             raise VideoProcessingError("FFmpeg timed out after 30 minutes")

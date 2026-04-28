@@ -3,11 +3,11 @@
 All endpoints require authentication. Channel-scoped data is
 automatically filtered to the authenticated user's channels.
 """
+
 from __future__ import annotations
 
-import json
 from datetime import date, timedelta
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 async def _require_channel_ownership(
     channel_id: str,
@@ -44,6 +45,7 @@ async def _require_channel_ownership(
 
 
 # ── Endpoint 1: Channel Overview ──────────────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/overview")
 async def get_channel_overview(
@@ -111,18 +113,24 @@ async def get_channel_overview(
 
     # Content DNA confidence
     dna_result = await db.execute(
-        text("SELECT confidence_score, last_updated FROM content_dna_models WHERE channel_id = :cid"),
+        text(
+            "SELECT confidence_score, last_updated FROM content_dna_models WHERE channel_id = :cid"
+        ),
         {"cid": channel_id},
     )
     dna_row = dna_result.fetchone()
 
     # Last sync from youtube_accounts.last_analytics_sync
     sync_result = await db.execute(
-        text("SELECT last_analytics_sync FROM youtube_accounts WHERE channel_id = :cid"),
+        text(
+            "SELECT last_analytics_sync FROM youtube_accounts WHERE channel_id = :cid"
+        ),
         {"cid": channel_id},
     )
     last_synced_row = sync_result.fetchone()
-    last_synced = last_synced_row._mapping["last_analytics_sync"] if last_synced_row else None
+    last_synced = (
+        last_synced_row._mapping["last_analytics_sync"] if last_synced_row else None
+    )
 
     return {
         "channel_id": channel_id,
@@ -130,17 +138,22 @@ async def get_channel_overview(
         "total_views": int(totals.get("total_views", 0)),
         "total_videos": int(totals.get("total_videos_with_data", 0)),
         "avg_ctr": round(float(totals.get("avg_ctr", 0)), 4),
-        "avg_view_duration_seconds": round(float(totals.get("avg_view_duration", 0)), 1),
+        "avg_view_duration_seconds": round(
+            float(totals.get("avg_view_duration", 0)), 1
+        ),
         "watch_time_hours": round(float(totals.get("watch_time_minutes", 0)) / 60, 1),
         "views_last_30d": curr_views,
         "subscribers_last_30d": int(recent.get("subs_30d", 0)),
         "views_trend_pct": trend_pct,
-        "content_dna_confidence": float(dna_row._mapping["confidence_score"]) if dna_row else 0.0,
+        "content_dna_confidence": float(dna_row._mapping["confidence_score"])
+        if dna_row
+        else 0.0,
         "last_synced": last_synced.isoformat() if last_synced else None,
     }
 
 
 # ── Endpoint 2: Videos with analytics ────────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/videos")
 async def list_videos_with_analytics(
@@ -194,7 +207,9 @@ async def list_videos_with_analytics(
 
     # Total count
     count_result = await db.execute(
-        text("SELECT COUNT(DISTINCT youtube_video_id) FROM video_analytics WHERE channel_id = :cid"),
+        text(
+            "SELECT COUNT(DISTINCT youtube_video_id) FROM video_analytics WHERE channel_id = :cid"
+        ),
         {"cid": channel_id},
     )
     total = count_result.scalar() or 0
@@ -209,12 +224,16 @@ async def list_videos_with_analytics(
                 "video_id": str(r["video_id"]) if r.get("video_id") else None,
                 "youtube_video_id": r.get("youtube_video_id") or "",
                 "title": r.get("title", ""),
-                "published_at": r["published_at"].isoformat() if r.get("published_at") else None,
+                "published_at": r["published_at"].isoformat()
+                if r.get("published_at")
+                else None,
                 "duration_seconds": duration,
                 "views": int(r.get("total_views", 0)),
                 "avg_ctr": round(float(r.get("avg_ctr", 0)), 4),
                 "watch_time_minutes": round(float(r.get("total_watch_time", 0)), 1),
-                "avg_view_duration_seconds": round(float(r.get("avg_view_duration_seconds", 0)), 1),
+                "avg_view_duration_seconds": round(
+                    float(r.get("avg_view_duration_seconds", 0)), 1
+                ),
                 "avg_view_percentage": round(float(r.get("avg_view_percentage", 0)), 1),
                 "clips_generated": int(r.get("clips_generated", 0)),
                 "has_retention_data": bool(r.get("has_retention_data", False)),
@@ -226,6 +245,7 @@ async def list_videos_with_analytics(
 
 
 # ── Endpoint 3: Retention Curve ───────────────────────────────────────────────
+
 
 @router.get("/videos/{youtube_video_id}/retention")
 async def get_retention_curve(
@@ -260,7 +280,7 @@ async def get_retention_curve(
 
     # Build optimal clip windows from peaks
     optimal_windows = []
-    for peak in (peak_moments if isinstance(peak_moments, list) else []):
+    for peak in peak_moments if isinstance(peak_moments, list) else []:
         ts = peak.get("timestamp_seconds", 0)
         window_start = max(0, ts - 60)
         window_end = min(duration, ts + 120)
@@ -290,6 +310,7 @@ async def get_retention_curve(
 
 
 # ── Endpoint 4: Content DNA ───────────────────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/content-dna")
 async def get_content_dna(
@@ -343,11 +364,14 @@ async def get_content_dna(
         "top_performing_patterns": r.get("top_performing_patterns", {}),
         "game_performance": r.get("game_performance", {}),
         "underperforming_patterns": r.get("underperforming_patterns", {}),
-        "last_updated": r["last_updated"].isoformat() if r.get("last_updated") else None,
+        "last_updated": r["last_updated"].isoformat()
+        if r.get("last_updated")
+        else None,
     }
 
 
 # ── Endpoint 5: Opportunities ─────────────────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/opportunities")
 async def get_opportunities(
@@ -382,6 +406,7 @@ async def get_opportunities(
 
 
 # ── Endpoint 6: Weekly Report ─────────────────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/weekly-report/latest")
 async def get_latest_weekly_report(
@@ -419,11 +444,14 @@ async def get_latest_weekly_report(
         "top_clip_type": r.get("top_clip_type"),
         "views_change_pct": r.get("views_change_pct"),
         "subscribers_change": r.get("subscribers_change"),
-        "generated_at": r["generated_at"].isoformat() if r.get("generated_at") else None,
+        "generated_at": r["generated_at"].isoformat()
+        if r.get("generated_at")
+        else None,
     }
 
 
 # ── Endpoint 7: Daily Stats (time-series) ────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/daily-stats")
 async def get_daily_stats(
@@ -466,6 +494,7 @@ async def get_daily_stats(
 
 # ── Endpoint 8: Trigger Manual Sync ──────────────────────────────────────────
 
+
 @router.post("/channel/{channel_id}/sync", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_sync(
     channel_id: str,
@@ -489,8 +518,11 @@ async def trigger_sync(
     last_sync = result.scalar()
     if last_sync:
         from datetime import datetime, timezone
+
         now = datetime.now(tz=timezone.utc)
-        hours_since = (now - last_sync.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+        hours_since = (
+            now - last_sync.replace(tzinfo=timezone.utc)
+        ).total_seconds() / 3600
         if hours_since < 6:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -498,6 +530,7 @@ async def trigger_sync(
             )
 
     from app.workers.tasks.analytics import sync_channel_analytics
+
     task = sync_channel_analytics.delay(str(account["id"]))
     logger.info(f"[analytics] Manual sync triggered for {channel_id}, task={task.id}")
 
@@ -505,6 +538,7 @@ async def trigger_sync(
 
 
 # ── Endpoint 9: Game Performance ─────────────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/game-performance")
 async def get_game_performance(
@@ -522,13 +556,18 @@ async def get_game_performance(
     game_perf: dict = dict(row._mapping)["game_performance"] if row else {}
 
     if not game_perf:
-        return {"games": [], "message": "Sync analytics untuk mendapatkan data performa game"}
+        return {
+            "games": [],
+            "message": "Sync analytics untuk mendapatkan data performa game",
+        }
 
     games = []
     all_views = [v["avg_views"] for v in game_perf.values() if v.get("avg_views")]
     max_views = max(all_views) if all_views else 1
 
-    for game_name, stats in sorted(game_perf.items(), key=lambda x: x[1].get("avg_views", 0), reverse=True):
+    for game_name, stats in sorted(
+        game_perf.items(), key=lambda x: x[1].get("avg_views", 0), reverse=True
+    ):
         avg_views = stats.get("avg_views", 0)
         avg_ctr = stats.get("avg_ctr", 0)
         trend = "up" if avg_views >= max_views * 0.7 else "stable"

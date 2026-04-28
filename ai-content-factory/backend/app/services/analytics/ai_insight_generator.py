@@ -3,6 +3,7 @@
 Generates structured insights using OpenRouter (Claude Sonnet primary,
 GPT-4o-mini fallback). All outputs are in Bahasa Indonesia.
 """
+
 from __future__ import annotations
 
 import json
@@ -126,7 +127,11 @@ _DEFAULT_WEEKLY_REPORT: dict[str, Any] = {
 
 _DEFAULT_DNA: dict[str, Any] = {
     "title_patterns": {"winning": [], "losing": [], "recommended_format": ""},
-    "hook_insights": {"optimal_duration_seconds": 8, "effective_patterns": [], "avoid": []},
+    "hook_insights": {
+        "optimal_duration_seconds": 8,
+        "effective_patterns": [],
+        "avoid": [],
+    },
     "clip_strategy": {
         "optimal_duration_seconds": {"min": 45, "max": 180, "sweet_spot": 90},
         "best_moment_types": [],
@@ -177,7 +182,9 @@ Video belum diclip (berpotensi): {unclipped_count} video
             user=user_msg.strip(),
         )
         if result is None:
-            logger.warning("[AIInsightGenerator] weekly report generation failed, using default")
+            logger.warning(
+                "[AIInsightGenerator] weekly report generation failed, using default"
+            )
             return _DEFAULT_WEEKLY_REPORT
         return result
 
@@ -214,11 +221,11 @@ Identifikasi pola konten yang efektif untuk channel gaming Indonesia ini.
         user_msg = f"""
 Game: {game}
 Momen: {moment_description}
-Transcript (excerpt): {transcript_excerpt[:500] if transcript_excerpt else 'tidak tersedia'}
+Transcript (excerpt): {transcript_excerpt[:500] if transcript_excerpt else "tidak tersedia"}
 
 Content DNA channel:
-Pola judul yang berhasil: {content_dna.get('top_performing_patterns', {}).get('title_patterns', [])}
-Pola yang harus dihindari: {content_dna.get('underperforming_patterns', {}).get('titles', [])}
+Pola judul yang berhasil: {content_dna.get("top_performing_patterns", {}).get("title_patterns", [])}
+Pola yang harus dihindari: {content_dna.get("underperforming_patterns", {}).get("titles", [])}
 """
         result = await self._call_openrouter(
             system=_TITLE_OPTIMIZER_SYSTEM,
@@ -226,7 +233,14 @@ Pola yang harus dihindari: {content_dna.get('underperforming_patterns', {}).get(
         )
         if result is None:
             return {
-                "titles": [{"text": f"Moment Epik {game}!", "style": "epic", "predicted_ctr_boost": "medium", "reasoning": "Default fallback"}],
+                "titles": [
+                    {
+                        "text": f"Moment Epik {game}!",
+                        "style": "epic",
+                        "predicted_ctr_boost": "medium",
+                        "reasoning": "Default fallback",
+                    }
+                ],
                 "recommended": 0,
                 "hashtags": [game.replace(" ", ""), "gaming", "Indonesia"],
                 "hook_suggestion": "Mulai dengan momen paling menarik langsung",
@@ -283,9 +297,13 @@ Pola yang harus dihindari: {content_dna.get('underperforming_patterns', {}).get(
             return json.loads(raw.strip())
 
         except json.JSONDecodeError as exc:
-            logger.warning(f"[AIInsightGenerator] JSON parse failed ({exc}), retrying with explicit instruction")
+            logger.warning(
+                f"[AIInsightGenerator] JSON parse failed ({exc}), retrying with explicit instruction"
+            )
             # On retry, explicitly remind to output only JSON
-            raise ValueError("JSON parse failed — retry with explicit instruction") from exc
+            raise ValueError(
+                "JSON parse failed — retry with explicit instruction"
+            ) from exc
 
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
@@ -293,7 +311,9 @@ Pola yang harus dihindari: {content_dna.get('underperforming_patterns', {}).get(
                 raise  # tenacity will retry
             # Try fallback model on 5xx
             if exc.response.status_code >= 500 and target_model != self._fallback:
-                logger.warning(f"[AIInsightGenerator] Model {target_model} failed, trying fallback")
+                logger.warning(
+                    f"[AIInsightGenerator] Model {target_model} failed, trying fallback"
+                )
                 return await self._call_openrouter(system, user, model=self._fallback)
             logger.error(f"[AIInsightGenerator] HTTP error: {exc}")
             return None

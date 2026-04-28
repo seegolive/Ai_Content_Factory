@@ -1,6 +1,6 @@
 """Video management API routes."""
+
 import os
-import shutil
 import uuid
 from typing import List, Optional
 
@@ -27,7 +27,8 @@ router = APIRouter()
 
 STAGE_PROGRESS = {
     None: 0,
-    "input_validated": 10,
+    "downloading": 0,
+    "input_validated": 15,
     "transcript_done": 35,
     "ai_done": 55,
     "qc_done": 70,
@@ -38,7 +39,13 @@ STAGE_PROGRESS = {
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
 
-def _get_progress(checkpoint: Optional[str]) -> int:
+def _get_progress(checkpoint: Optional[str], download_progress: int = 0) -> int:
+    if checkpoint is None and download_progress > 0:
+        # Map yt-dlp download 0–100 → pipeline 0–15%
+        return round(download_progress * 0.15)
+    if checkpoint == "input_validated" and download_progress > 0:
+        # Map Whisper transcription 0–100 → pipeline 15–35%
+        return 15 + round(download_progress * 0.20)
     return STAGE_PROGRESS.get(checkpoint, 0)
 
 
@@ -75,7 +82,14 @@ async def preview_youtube_url(
 
     # Build list of available quality labels
     formats = info.get("formats", [])
-    heights = sorted({f.get("height") for f in formats if f.get("height") and f.get("vcodec") != "none"}, reverse=True)
+    heights = sorted(
+        {
+            f.get("height")
+            for f in formats
+            if f.get("height") and f.get("vcodec") != "none"
+        },
+        reverse=True,
+    )
     quality_labels = []
     for h in heights:
         if h >= 2160:
@@ -103,7 +117,11 @@ async def preview_youtube_url(
     )
 
 
-@router.post("/videos/upload", response_model=VideoUploadResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/videos/upload",
+    response_model=VideoUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def upload_video(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
@@ -155,6 +173,7 @@ async def upload_video(
     # Trigger pipeline
     try:
         from app.workers.tasks.pipeline import process_video_pipeline
+
         task = process_video_pipeline.delay(str(video_id))
         video.celery_task_id = task.id
         await db.commit()
@@ -168,13 +187,23 @@ async def upload_video(
     )
 
 
-@router.post("/videos/from-url", response_model=VideoUploadResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/videos/from-url",
+    response_model=VideoUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def video_from_url(
     body: VideoFromUrlRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a video job from a YouTube URL."""
+    if not ("youtube.com/watch" in body.youtube_url or "youtu.be/" in body.youtube_url):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must be a valid YouTube URL",
+        )
+
     video_id = uuid.uuid4()
     video = Video(
         id=video_id,
@@ -191,6 +220,7 @@ async def video_from_url(
 
     try:
         from app.workers.tasks.pipeline import process_video_pipeline
+
         task = process_video_pipeline.delay(str(video_id))
         video.celery_task_id = task.id
         await db.commit()
@@ -216,7 +246,11 @@ async def list_videos(
     query = select(Video).where(Video.user_id == current_user.id)
     if status_filter:
         query = query.where(Video.status == status_filter)
-    query = query.order_by(Video.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    query = (
+        query.order_by(Video.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
 
     result = await db.execute(query)
     videos = result.scalars().all()
@@ -253,7 +287,9 @@ async def get_video(
     )
     video = result.scalar_one_or_none()
     if not video:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
+        )
 
     clips_result = await db.execute(
         select(func.count(Clip.id)).where(Clip.video_id == video_id)
@@ -274,21 +310,32 @@ async def get_video_status(
 ):
     """Lightweight polling endpoint for real-time status."""
     result = await db.execute(
-        select(Video.status, Video.checkpoint, Video.error_message, Video.download_progress).where(
-            Video.id == video_id, Video.user_id == current_user.id
-        )
+        select(
+            Video.status, Video.checkpoint, Video.error_message, Video.download_progress
+        ).where(Video.id == video_id, Video.user_id == current_user.id)
     )
     row = result.first()
     if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
+        )
+
+    dl = row.download_progress or 0
+    # Determine a human-readable current_stage
+    current_stage = row.checkpoint
+    if current_stage is None and dl > 0:
+        current_stage = "downloading"
+    elif current_stage == "input_validated" and 0 < dl < 100:
+        # Whisper is actively transcribing — overwrite with clearer stage name
+        current_stage = "transcribing"
 
     return VideoStatusResponse(
         video_id=video_id,
         status=row.status,
         checkpoint=row.checkpoint,
-        progress_percent=_get_progress(row.checkpoint),
-        download_progress=row.download_progress,
-        current_stage=row.checkpoint,
+        progress_percent=_get_progress(row.checkpoint, dl),
+        download_progress=dl,
+        current_stage=current_stage,
         error_message=row.error_message,
     )
 
@@ -305,12 +352,15 @@ async def delete_video(
     )
     video = result.scalar_one_or_none()
     if not video:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
+        )
 
     # Cancel Celery task
     if video.celery_task_id:
         try:
             from app.workers.celery_app import celery_app
+
             celery_app.control.revoke(video.celery_task_id, terminate=True)
         except Exception as e:
             logger.warning(f"Could not cancel Celery task {video.celery_task_id}: {e}")

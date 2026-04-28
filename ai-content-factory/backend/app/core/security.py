@@ -1,4 +1,5 @@
 """JWT creation/verification, Google OAuth helpers, and current-user dependency."""
+
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -44,7 +45,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 def verify_token(token: str) -> Optional[str]:
     """Return user_id (sub) or None if token is invalid."""
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
         user_id: str = payload.get("sub")
         if not user_id:
             return None
@@ -65,6 +68,7 @@ def build_google_auth_url(state: str) -> str:
         "state": state,
     }
     from urllib.parse import urlencode
+
     query = urlencode(params)
     return f"{GOOGLE_AUTH_URL}?{query}"
 
@@ -107,19 +111,27 @@ async def get_current_user(
     from app.models.user import User
 
     if not credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
 
     user_id = verify_token(credentials.credentials)
     if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
 
     try:
         user_uuid = uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
 
     result = await db.execute(select(User).where(User.id == user_uuid))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
+        )
     return user

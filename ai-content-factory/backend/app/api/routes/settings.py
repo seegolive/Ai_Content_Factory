@@ -1,6 +1,6 @@
 """Settings API routes — channel crop config, facecam detect, preview crop."""
+
 import base64
-import io
 import uuid
 from typing import Optional
 
@@ -8,11 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db
-from app.models.channel_config import ChannelCropConfig, GameCropProfile, seed_default_game_profiles
+from app.models.channel_config import (
+    ChannelCropConfig,
+    GameCropProfile,
+    seed_default_game_profiles,
+)
 from app.models.user import User
 from app.services.facecam_detector import FacecamDetector
 
@@ -20,6 +23,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
+
 
 class CropConfigOut(BaseModel):
     id: str
@@ -61,6 +65,7 @@ class PreviewCropRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 async def _get_or_create_config(
     channel_id: str, youtube_account_id: uuid.UUID, db: AsyncSession
 ) -> ChannelCropConfig:
@@ -94,6 +99,7 @@ async def _verify_channel_ownership(
 ):
     """Return the YoutubeAccount row if user owns this channel, else raise 403."""
     from app.models.video import YoutubeAccount  # avoid circular import
+
     result = await db.execute(
         select(YoutubeAccount).where(
             YoutubeAccount.channel_id == channel_id,
@@ -102,11 +108,14 @@ async def _verify_channel_ownership(
     )
     yt_account = result.scalars().first()
     if not yt_account:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Channel not found")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Channel not found"
+        )
     return yt_account
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.get("/channel/{channel_id}/crop-config", response_model=CropConfigOut)
 async def get_crop_config(
@@ -117,10 +126,11 @@ async def get_crop_config(
     """Get channel vertical crop configuration."""
     yt_account = await _verify_channel_ownership(channel_id, current_user.id, db)
 
-
     config = await _get_or_create_config(channel_id, yt_account.id, db)
     profiles_result = await db.execute(
-        select(GameCropProfile).where(GameCropProfile.channel_crop_config_id == config.id)
+        select(GameCropProfile).where(
+            GameCropProfile.channel_crop_config_id == config.id
+        )
     )
     profiles = profiles_result.scalars().all()
 
@@ -170,7 +180,9 @@ async def update_crop_config(
 
     await db.commit()
     await db.refresh(config)
-    logger.info(f"[Settings] Updated crop config for channel {channel_id}: {update_data}")
+    logger.info(
+        f"[Settings] Updated crop config for channel {channel_id}: {update_data}"
+    )
     return await get_crop_config(channel_id, current_user, db)
 
 
@@ -189,6 +201,7 @@ async def detect_facecam(
 
     # Load video file path
     from app.models.video import Video
+
     result = await db.execute(
         select(Video).where(
             Video.id == uuid.UUID(body.video_id),
@@ -197,10 +210,14 @@ async def detect_facecam(
     )
     video = result.scalars().first()
     if not video or not video.file_path:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
+        )
 
     detector = FacecamDetector()
-    region = detector.detect_facecam_region(video.file_path, start_offset=body.start_offset_seconds)
+    region = detector.detect_facecam_region(
+        video.file_path, start_offset=body.start_offset_seconds
+    )
 
     if not region:
         return {
@@ -214,8 +231,10 @@ async def detect_facecam(
     return {
         "detected": True,
         "region": {
-            "x": region.x, "y": region.y,
-            "width": region.width, "height": region.height,
+            "x": region.x,
+            "y": region.y,
+            "width": region.width,
+            "height": region.height,
             "position": region.position,
         },
         "suggested_config": suggested,
@@ -237,6 +256,7 @@ async def preview_crop(
     await _verify_channel_ownership(channel_id, current_user.id, db)
 
     from app.models.video import Video
+
     result = await db.execute(
         select(Video).where(
             Video.id == uuid.UUID(body.video_id),
@@ -245,7 +265,9 @@ async def preview_crop(
     )
     video = result.scalars().first()
     if not video or not video.file_path:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
+        )
 
     import asyncio
     import tempfile
@@ -257,10 +279,19 @@ async def preview_crop(
     try:
         # Get frame from source video
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-ss", str(body.timestamp_seconds),
-            "-i", video.file_path,
-            "-vframes", "1", "-q:v", "2", frame_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(body.timestamp_seconds),
+            "-i",
+            video.file_path,
+            "-vframes",
+            "1",
+            "-q:v",
+            "2",
+            frame_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await asyncio.wait_for(proc.communicate(), timeout=30)
 
@@ -273,7 +304,11 @@ async def preview_crop(
         if body.vertical_crop_mode == "smart_offset":
             anchor = body.crop_anchor
             x_offset = body.crop_x_offset
-            x = max(0, x_offset) if anchor == "left" else max(0, source_w - crop_w - x_offset)
+            x = (
+                max(0, x_offset)
+                if anchor == "left"
+                else max(0, source_w - crop_w - x_offset)
+            )
             vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=270:480"
         elif body.vertical_crop_mode == "center_crop":
             x = (source_w - crop_w) // 2
@@ -301,9 +336,19 @@ async def preview_crop(
             preview_path = f2.name
 
         proc2 = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", frame_path,
-            "-vf", vf, "-vframes", "1", "-q:v", "3", preview_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "ffmpeg",
+            "-y",
+            "-i",
+            frame_path,
+            "-vf",
+            vf,
+            "-vframes",
+            "1",
+            "-q:v",
+            "3",
+            preview_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await asyncio.wait_for(proc2.communicate(), timeout=30)
 
@@ -317,9 +362,12 @@ async def preview_crop(
         }
     except Exception as e:
         logger.error(f"[Settings] Preview crop failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Preview generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Preview generation failed: {str(e)}"
+        )
     finally:
         import os as _os
+
         for p in [frame_path]:
             try:
                 _os.unlink(p)

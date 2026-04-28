@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Youtube, Globe, Lock, EyeOff, Check, Loader2, AlertTriangle, ExternalLink, Hash, Tag, FileText, Type, ChevronDown } from "lucide-react";
 import { useClip, useClipPublishStatus, useSavePublishSettings, usePublishClip, useResetPublishStatus } from "@/lib/queries";
 import { clipsApi } from "@/lib/api";
+import { toast } from "sonner";
 
 type Privacy = "public" | "unlisted" | "private";
 
@@ -95,6 +96,18 @@ export default function PublishPage() {
     }
   }, [publishStatus]);
 
+  // ── Validation ────────────────────────────────────────────────────────────
+  const [errors, setErrors] = useState<{ title?: string; description?: string }>({});
+
+  function validateForm(): boolean {
+    const next: { title?: string; description?: string } = {};
+    if (!title.trim()) next.title = "Title is required.";
+    else if (title.trim().length > 100) next.title = "Title must be 100 characters or fewer.";
+    if (description.length > 5000) next.description = "Description must be 5000 characters or fewer.";
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  }
+
   const addHashtag = () => {
     const tag = hashtagInput.trim().replace(/^#/, "");
     if (tag && !hashtags.includes(tag)) {
@@ -105,12 +118,14 @@ export default function PublishPage() {
   const removeHashtag = (t: string) => setHashtags(hashtags.filter((h) => h !== t));
 
   const handleSave = async () => {
+    if (!validateForm()) return;
     await saveSettings({ clipId, settings: { title, description, hashtags, privacy, category } });
     setSavedOk(true);
     setTimeout(() => setSavedOk(false), 2000);
   };
 
   const handlePublish = async () => {
+    if (!validateForm()) return;
     // Save settings first
     await saveSettings({ clipId, settings: { title, description, hashtags, privacy, category } });
     setPublishing(true);
@@ -121,7 +136,7 @@ export default function PublishPage() {
       setPublishing(false);
       setPollEnabled(false);
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? "Failed to start publish";
-      alert(msg);
+      toast.error(msg);
     }
   };
 
@@ -256,13 +271,14 @@ export default function PublishPage() {
               Title
             </label>
             <input
-              className="publish-input"
+              className={`publish-input${errors.title ? " input-error" : ""}`}
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => { setTitle(e.target.value); if (errors.title) setErrors((p) => ({ ...p, title: undefined })); }}
               maxLength={100}
               placeholder="Enter YouTube title…"
             />
             <span className="publish-char-count">{title.length}/100</span>
+            {errors.title && <span className="publish-field-error">{errors.title}</span>}
           </div>
 
           <div className="publish-form-section">
@@ -271,14 +287,15 @@ export default function PublishPage() {
               Description
             </label>
             <textarea
-              className="publish-textarea"
+              className={`publish-textarea${errors.description ? " input-error" : ""}`}
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => { setDescription(e.target.value); if (errors.description) setErrors((p) => ({ ...p, description: undefined })); }}
               maxLength={5000}
               rows={5}
               placeholder="Add a description…"
             />
             <span className="publish-char-count">{description.length}/5000</span>
+            {errors.description && <span className="publish-field-error">{errors.description}</span>}
           </div>
 
           <div className="publish-form-section">

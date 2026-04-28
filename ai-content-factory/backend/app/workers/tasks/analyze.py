@@ -1,4 +1,5 @@
 """AI Analysis subtask stub."""
+
 from app.workers.celery_app import celery_app
 
 

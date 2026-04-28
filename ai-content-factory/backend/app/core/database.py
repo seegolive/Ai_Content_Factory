@@ -1,4 +1,5 @@
 """Async database engine, session factory, and dependency."""
+
 import os
 from typing import AsyncGenerator
 
@@ -43,12 +44,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create all tables and required storage directories."""
-    # Import models so metadata is populated before create_all
+    """Ensure required storage directories exist. Schema is managed by Alembic."""
+    # Import models to register them with SQLAlchemy metadata (needed for FK checks)
     import app.models  # noqa: F401
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
     # Ensure local storage directories exist
     storage_path = settings.LOCAL_STORAGE_PATH

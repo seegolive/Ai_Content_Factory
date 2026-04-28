@@ -3,14 +3,14 @@
 Scheduled tasks for syncing YouTube analytics, updating Content DNA,
 and generating weekly insight reports.
 """
+
 from __future__ import annotations
 
 import asyncio
-import uuid
-from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from contextlib import asynccontextmanager
+from datetime import date, timedelta
+from typing import Any, Optional
 
-from celery import shared_task
 from loguru import logger
 
 from app.workers.celery_app import celery_app
@@ -25,14 +25,17 @@ def _run_async(coro):
         loop.close()
 
 
-from contextlib import asynccontextmanager
-
 @asynccontextmanager
 async def _task_db_session():
     """Create a NullPool DB session for use in Celery forked workers."""
     from sqlalchemy.pool import NullPool
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
     from app.core.config import settings
+
     _engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
     _Session = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
     try:
@@ -42,7 +45,9 @@ async def _task_db_session():
         await _engine.dispose()
 
 
-@celery_app.task(bind=True, max_retries=3, name="app.workers.tasks.analytics.sync_channel_analytics")
+@celery_app.task(
+    bind=True, max_retries=3, name="app.workers.tasks.analytics.sync_channel_analytics"
+)
 def sync_channel_analytics(self, youtube_account_id: str) -> dict[str, Any]:
     """
     Fetch analytics for all recent videos in a channel.
@@ -53,7 +58,9 @@ def sync_channel_analytics(self, youtube_account_id: str) -> dict[str, Any]:
     return _run_async(_sync_channel_analytics_async(youtube_account_id))
 
 
-@celery_app.task(bind=True, max_retries=3, name="app.workers.tasks.analytics.update_content_dna")
+@celery_app.task(
+    bind=True, max_retries=3, name="app.workers.tasks.analytics.update_content_dna"
+)
 def update_content_dna(self, youtube_account_id: str) -> dict[str, Any]:
     """
     Rebuild Content DNA model after analytics sync.
@@ -62,7 +69,11 @@ def update_content_dna(self, youtube_account_id: str) -> dict[str, Any]:
     return _run_async(_update_content_dna_async(youtube_account_id))
 
 
-@celery_app.task(bind=True, max_retries=2, name="app.workers.tasks.analytics.generate_weekly_insight_report")
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    name="app.workers.tasks.analytics.generate_weekly_insight_report",
+)
 def generate_weekly_insight_report(self, youtube_account_id: str) -> dict[str, Any]:
     """
     Generate AI-powered weekly insight report.
@@ -83,7 +94,7 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
 
     async with _task_db_session() as db:
         # Load youtube account
-        from sqlalchemy import select, text
+        from sqlalchemy import text
 
         result = await db.execute(
             text("SELECT * FROM youtube_accounts WHERE id = :id"),
@@ -91,7 +102,9 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
         )
         account = result.fetchone()
         if not account:
-            logger.error(f"[sync_analytics] youtube_account {youtube_account_id} not found")
+            logger.error(
+                f"[sync_analytics] youtube_account {youtube_account_id} not found"
+            )
             return {"status": "error", "message": "Account not found"}
 
         account_dict = dict(account._mapping)
@@ -115,7 +128,9 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
 
         synced = 0
         # Track top-viewed videos for retention curve batch (max 5 per sync run)
-        retention_candidates: list[tuple[int, str, Optional[str]]] = []  # (views, yt_id, video_id)
+        retention_candidates: list[
+            tuple[int, str, Optional[str]]
+        ] = []  # (views, yt_id, video_id)
 
         for video_meta in videos:
             try:
@@ -131,9 +146,9 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                 )
                 if not analytics:
                     # Still record video metadata so overview counts are accurate
-                    analytics_views = video_meta.views
+                    pass  # views available from video_meta.views
                 else:
-                    analytics_views = analytics.views if analytics.views > 0 else video_meta.views
+                    pass  # views available from analytics.views
 
                 # Add rate-limit delay between analytics API calls
                 await asyncio.sleep(0.3)
@@ -149,7 +164,10 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                         LIMIT 1
                         """
                     ),
-                    {"channel_id": channel_id, "title_pattern": f"%{video_meta.title[:30]}%"},
+                    {
+                        "channel_id": channel_id,
+                        "title_pattern": f"%{video_meta.title[:30]}%",
+                    },
                 )
                 vid_row = vid_result.fetchone()
                 video_id = str(vid_row[0]) if vid_row else None
@@ -194,8 +212,12 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                             "published_at": video_meta.published_at,
                             # Prefer Analytics API lifetime views; fall back to YouTube Data API
                             # statistics.viewCount (video_meta.views) when Analytics returns 0.
-                            "views": analytics.views if analytics.views > 0 else video_meta.views,
-                            "likes": analytics.likes if analytics.likes > 0 else video_meta.likes,
+                            "views": analytics.views
+                            if analytics.views > 0
+                            else video_meta.views,
+                            "likes": analytics.likes
+                            if analytics.likes > 0
+                            else video_meta.likes,
                             "comments": analytics.comments,
                             "shares": analytics.shares,
                             "watch_time": analytics.watch_time_minutes,
@@ -216,10 +238,14 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                 # Queue video for retention curve if it has enough views (≥10 all-time).
                 # Process at most 5 retention curves per sync run to avoid SSL overload.
                 if video_meta.views >= 10:
-                    retention_candidates.append((video_meta.views, video_meta.youtube_id, video_id))
+                    retention_candidates.append(
+                        (video_meta.views, video_meta.youtube_id, video_id)
+                    )
 
             except Exception as exc:
-                logger.warning(f"[sync_analytics] Failed for video {video_meta.youtube_id}: {exc}")
+                logger.warning(
+                    f"[sync_analytics] Failed for video {video_meta.youtube_id}: {exc}"
+                )
                 continue
 
         # 2. Fetch retention curves — top 5 by all-time views, skip already fetched
@@ -228,7 +254,9 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
         for all_time_views, yt_id, vid_id in retention_candidates[:5]:
             try:
                 existing_curve = await db.execute(
-                    text("SELECT id FROM video_retention_curves WHERE youtube_video_id = :yt_id"),
+                    text(
+                        "SELECT id FROM video_retention_curves WHERE youtube_video_id = :yt_id"
+                    ),
                     {"yt_id": yt_id},
                 )
                 if existing_curve.fetchone():
@@ -240,10 +268,15 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                 if curve_points:
                     peaks = detect_peak_moments(curve_points)
                     drops = detect_drop_offs(curve_points)
-                    points_json = _json.dumps([
-                        {"elapsed_ratio": p.elapsed_ratio, "retention_ratio": p.retention_ratio}
-                        for p in curve_points
-                    ])
+                    points_json = _json.dumps(
+                        [
+                            {
+                                "elapsed_ratio": p.elapsed_ratio,
+                                "retention_ratio": p.retention_ratio,
+                            }
+                            for p in curve_points
+                        ]
+                    )
                     await db.execute(
                         text(
                             """
@@ -263,12 +296,16 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                         },
                     )
                     curves_fetched += 1
-                    logger.info(f"[sync_analytics] Retention curve saved for {yt_id} ({len(curve_points)} pts)")
+                    logger.info(
+                        f"[sync_analytics] Retention curve saved for {yt_id} ({len(curve_points)} pts)"
+                    )
                 await asyncio.sleep(0.5)
             except asyncio.TimeoutError:
                 logger.warning(f"[sync_analytics] Retention curve timeout for {yt_id}")
             except Exception as curve_exc:
-                logger.warning(f"[sync_analytics] Retention curve failed for {yt_id}: {curve_exc}")
+                logger.warning(
+                    f"[sync_analytics] Retention curve failed for {yt_id}: {curve_exc}"
+                )
 
         logger.info(f"[sync_analytics] Retention curves: {curves_fetched} new saved")
 
@@ -276,6 +313,7 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
         daily_start = end_date - timedelta(days=30)
         daily_stats = await fetcher.fetch_channel_daily_stats(daily_start, end_date)
         import json as _json
+
         for day in daily_stats:
             try:
                 await db.execute(
@@ -303,14 +341,18 @@ async def _sync_channel_analytics_async(youtube_account_id: str) -> dict[str, An
                     },
                 )
             except Exception as exc:
-                logger.warning(f"[sync_analytics] Daily stats insert failed for {day.date}: {exc}")
+                logger.warning(
+                    f"[sync_analytics] Daily stats insert failed for {day.date}: {exc}"
+                )
 
         await db.commit()
         logger.info(f"[sync_analytics] Done. Synced {synced} videos for {channel_id}")
 
         # Update last_analytics_sync timestamp on the account
         await db.execute(
-            text("UPDATE youtube_accounts SET last_analytics_sync = now() WHERE id = :id"),
+            text(
+                "UPDATE youtube_accounts SET last_analytics_sync = now() WHERE id = :id"
+            ),
             {"id": youtube_account_id},
         )
         await db.commit()
@@ -368,7 +410,9 @@ async def _update_content_dna_async(youtube_account_id: str) -> dict[str, Any]:
         # Only update if 5+ new videos since last run
         last_analyzed = existing._mapping["videos_analyzed"] if existing else 0
         if current_count - last_analyzed < 5 and existing is not None:
-            logger.info(f"[update_dna] Skip: only {current_count - last_analyzed} new videos")
+            logger.info(
+                f"[update_dna] Skip: only {current_count - last_analyzed} new videos"
+            )
             return {"status": "skip"}
 
         ai = AIInsightGenerator()
@@ -436,7 +480,9 @@ async def _update_content_dna_async(youtube_account_id: str) -> dict[str, Any]:
             )
 
         await db.commit()
-        logger.info(f"[update_dna] Updated for {channel_id}, confidence={dna['confidence_score']:.2f}")
+        logger.info(
+            f"[update_dna] Updated for {channel_id}, confidence={dna['confidence_score']:.2f}"
+        )
         return {"status": "ok", "confidence": dna["confidence_score"]}
 
 
@@ -449,7 +495,9 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
 
     async with _task_db_session() as db:
         result = await db.execute(
-            text("SELECT ya.*, u.email, u.name FROM youtube_accounts ya JOIN users u ON u.id = ya.user_id WHERE ya.id = :id"),
+            text(
+                "SELECT ya.*, u.email, u.name FROM youtube_accounts ya JOIN users u ON u.id = ya.user_id WHERE ya.id = :id"
+            ),
             {"id": youtube_account_id},
         )
         account = result.fetchone()
@@ -511,7 +559,9 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
 
         # Context for AI: total videos with analytics data
         total_videos_result = await db.execute(
-            text("SELECT COUNT(DISTINCT youtube_video_id) FROM video_analytics WHERE channel_id = :cid"),
+            text(
+                "SELECT COUNT(DISTINCT youtube_video_id) FROM video_analytics WHERE channel_id = :cid"
+            ),
             {"cid": channel_id},
         )
         total_videos_with_analytics = total_videos_result.scalar() or 0
@@ -528,13 +578,22 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
         subs_change_clean = raw_subs_net if raw_subs_net > -1 else 0
 
         # Guard: no data at all — skip AI call, store a "not enough data" placeholder
-        if total_videos_with_analytics == 0 and curr_week_views == 0 and prev_week_views == 0:
+        if (
+            total_videos_with_analytics == 0
+            and curr_week_views == 0
+            and prev_week_views == 0
+        ):
             report_data = {
                 "summary": f"Channel {channel_name} baru terhubung. Lakukan sync analytics pertama untuk mendapatkan laporan.",
                 "wins": ["Channel berhasil terhubung dengan AI Content Factory"],
                 "issues": [],
                 "recommendations": [
-                    {"priority": "high", "action": "Lakukan Sync Analytics", "reason": "Belum ada data analytics yang tersedia", "expected_impact": "Laporan mingguan akan tersedia setelah sync pertama"}
+                    {
+                        "priority": "high",
+                        "action": "Lakukan Sync Analytics",
+                        "reason": "Belum ada data analytics yang tersedia",
+                        "expected_impact": "Laporan mingguan akan tersedia setelah sync pertama",
+                    }
                 ],
                 "best_performing_content": "",
                 "focus_game_next_week": "",
@@ -548,7 +607,9 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
                     "views": curr_week_views,
                     "watch_time_minutes": float(week_stats.get("watch_time", 0)),
                     "subscribers_net": subs_change_clean,
-                    "data_note": "Data minggu ini mungkin belum lengkap karena sync baru saja dilakukan" if current_week_data_sparse else "Data normal",
+                    "data_note": "Data minggu ini mungkin belum lengkap karena sync baru saja dilakukan"
+                    if current_week_data_sparse
+                    else "Data normal",
                 },
                 prev_week_stats={"views": prev_week_views},
                 top_videos=[],
@@ -597,7 +658,9 @@ async def _generate_weekly_report_async(youtube_account_id: str) -> dict[str, An
                 "clip_type": report_data.get("best_performing_content", ""),
                 "views_pct": views_change_pct if not current_week_data_sparse else None,
                 "subs_change": subs_change_clean,
-                "raw": json.dumps({"week_stats": week_stats, "prev_week_stats": prev_stats}),
+                "raw": json.dumps(
+                    {"week_stats": week_stats, "prev_week_stats": prev_stats}
+                ),
             },
         )
         await db.commit()

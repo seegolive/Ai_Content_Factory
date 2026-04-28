@@ -1,19 +1,24 @@
 """Game detector service — infer game from video title or transcript."""
+
 from __future__ import annotations
 
 from loguru import logger
 
 # Keyword mapping: game_name → list of lowercase keywords
 GAME_KEYWORDS: dict[str, list[str]] = {
-    "Battlefield 6":               ["battlefield 6", "bf6", "battlefield vi", "battlefield"],
-    "Valorant":                    ["valorant", "valo"],
-    "Kingdom Come Deliverance II": ["kingdom come", "kcd2", "kcd 2", "kingdom come deliverance"],
-    "Arc Raiders":                 ["arc raiders", "arcraiders"],
+    "Battlefield 6": ["battlefield 6", "bf6", "battlefield vi", "battlefield"],
+    "Valorant": ["valorant", "valo"],
+    "Kingdom Come Deliverance II": [
+        "kingdom come",
+        "kcd2",
+        "kcd 2",
+        "kingdom come deliverance",
+    ],
+    "Arc Raiders": ["arc raiders", "arcraiders"],
 }
 
 
 class GameDetector:
-
     def detect_from_title(self, title: str) -> str:
         """Detect game from video title. Returns game_name or '_default'."""
         title_lower = title.lower()

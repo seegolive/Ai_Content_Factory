@@ -1,13 +1,18 @@
-FROM python:3.12-slim
+FROM python:3.12-bullseye
 
-# System deps including ffmpeg (ffprobe is bundled with ffmpeg)
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    libpq-dev \
-    gcc \
-    curl \
-    unzip \
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Remove problematic *-updates and *-backports repos (mirror sync issue Apr 2026)
+# Use only stable bullseye main — all we need is curl for downloads
+RUN sed -i '/bullseye-updates\|bullseye-backports/d' /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends curl unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install static ffmpeg binary (bypasses apt mirror issues entirely)
+RUN curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+    | tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' \
+    && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
 # Install Deno (required by yt-dlp for YouTube JS signature solving → enables 1080p/1440p)
 RUN curl -fsSL https://deno.land/install.sh | sh

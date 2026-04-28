@@ -1,4 +1,5 @@
 """QC orchestration — delegates to VideoProcessorService, with moment-type duration awareness."""
+
 from typing import Optional
 
 from app.services.ai_brain import FALLBACK_DURATION_RULE, MOMENT_DURATION_RULES
@@ -33,32 +34,38 @@ async def run_qc(
 
         if duration is not None:
             if duration < rule["min"]:
-                result.issues.append(QCIssue(
-                    type="duration_too_short",
-                    description=(
-                        f"{moment_type} clip is {duration:.1f}s — "
-                        f"minimum is {rule['min']}s (ideal {rule['ideal_min']}–{rule['ideal_max']}s)"
-                    ),
-                    severity="error",
-                ))
+                result.issues.append(
+                    QCIssue(
+                        type="duration_too_short",
+                        description=(
+                            f"{moment_type} clip is {duration:.1f}s — "
+                            f"minimum is {rule['min']}s (ideal {rule['ideal_min']}–{rule['ideal_max']}s)"
+                        ),
+                        severity="error",
+                    )
+                )
                 result.passed = False
             elif duration > rule["max"]:
-                result.issues.append(QCIssue(
-                    type="duration_too_long",
-                    description=(
-                        f"{moment_type} clip is {duration:.1f}s — "
-                        f"maximum is {rule['max']}s (ideal {rule['ideal_min']}–{rule['ideal_max']}s)"
-                    ),
-                    severity="warning",
-                ))
+                result.issues.append(
+                    QCIssue(
+                        type="duration_too_long",
+                        description=(
+                            f"{moment_type} clip is {duration:.1f}s — "
+                            f"maximum is {rule['max']}s (ideal {rule['ideal_min']}–{rule['ideal_max']}s)"
+                        ),
+                        severity="warning",
+                    )
+                )
             elif duration < rule["ideal_min"] or duration > rule["ideal_max"]:
-                result.issues.append(QCIssue(
-                    type="duration_suboptimal",
-                    description=(
-                        f"{moment_type} clip is {duration:.1f}s — "
-                        f"ideal range is {rule['ideal_min']}–{rule['ideal_max']}s"
-                    ),
-                    severity="warning",
-                ))
+                result.issues.append(
+                    QCIssue(
+                        type="duration_suboptimal",
+                        description=(
+                            f"{moment_type} clip is {duration:.1f}s — "
+                            f"ideal range is {rule['ideal_min']}–{rule['ideal_max']}s"
+                        ),
+                        severity="warning",
+                    )
+                )
 
     return result

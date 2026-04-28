@@ -3,6 +3,7 @@
 These are internal data transfer objects — not SQLAlchemy models.
 Used between services and tasks to avoid tight coupling to ORM.
 """
+
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Optional
@@ -25,10 +26,10 @@ class VideoMetadata:
 
 @dataclass
 class RetentionDataPoint:
-    elapsed_ratio: float        # 0.0 – 1.0 (progress through video)
-    retention_ratio: float      # 0.0 – 1.0 (fraction still watching)
+    elapsed_ratio: float  # 0.0 – 1.0 (progress through video)
+    retention_ratio: float  # 0.0 – 1.0 (fraction still watching)
     relative_performance: float  # compared to similar videos
-    timestamp_seconds: int       # absolute second in video
+    timestamp_seconds: int  # absolute second in video
 
 
 @dataclass
@@ -74,7 +75,7 @@ class VideoOpportunity:
     duration_seconds: int
     published_at: datetime
     game_name: Optional[str]
-    viral_potential_score: float    # 0–100
+    viral_potential_score: float  # 0–100
     estimated_clips: int
     peak_moments_count: int
     has_retention_data: bool

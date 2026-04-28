@@ -3,6 +3,7 @@
 Analyzes historical channel performance to build a learning model
 (Content DNA) that makes viral scoring more accurate for this specific channel.
 """
+
 from __future__ import annotations
 
 import re
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from loguru import logger
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.analytics.models import VideoOpportunity
@@ -75,8 +76,6 @@ class ContentDNABuilder:
         Full analysis pipeline. Returns the DNA dict to be stored in DB.
         Raises ValueError if insufficient data.
         """
-        from app.models.video import Video  # local import to avoid circular
-        from sqlalchemy.dialects.postgresql import JSONB
 
         # ── Load analytics data ──────────────────────────────────────────────
         analytics_rows = await self._load_analytics(channel_id)
@@ -91,7 +90,11 @@ class ContentDNABuilder:
         enriched = []
         for row in analytics_rows:
             published_at = row["published_at"]
-            if published_at and hasattr(published_at, "tzinfo") and published_at.tzinfo is None:
+            if (
+                published_at
+                and hasattr(published_at, "tzinfo")
+                and published_at.tzinfo is None
+            ):
                 published_at = published_at.replace(tzinfo=timezone.utc)
             days_live = max(1, (now - published_at).days) if published_at else 30
             vpd = row["total_views"] / days_live
@@ -116,7 +119,9 @@ class ContentDNABuilder:
             for r in top_quartile
             if r.get("avg_view_duration_seconds")
         ]
-        optimal_clip_seconds = int(sum(avg_durations) / len(avg_durations)) if avg_durations else 90
+        optimal_clip_seconds = (
+            int(sum(avg_durations) / len(avg_durations)) if avg_durations else 90
+        )
 
         patterns: dict[str, Any] = {
             "title_patterns": title_patterns["winning"],
@@ -136,7 +141,9 @@ class ContentDNABuilder:
         if self._ai:
             try:
                 stats_summary = self._build_stats_summary(top_quartile, bottom_quartile)
-                ai_insights = await self._ai.analyze_content_dna(channel_id, stats_summary)
+                ai_insights = await self._ai.analyze_content_dna(
+                    channel_id, stats_summary
+                )
                 logger.info(f"[ContentDNA] AI insights generated for {channel_id}")
             except Exception as exc:
                 logger.warning(f"[ContentDNA] AI enhancement failed: {exc}")
@@ -147,7 +154,10 @@ class ContentDNABuilder:
             "niche": "gaming",
             "sub_niches": list(game_performance.keys())[:5],
             "viral_score_weights": self._calibrate_weights(top_quartile),
-            "top_performing_patterns": {**patterns, **(ai_insights.get("clip_strategy", {}))},
+            "top_performing_patterns": {
+                **patterns,
+                **(ai_insights.get("clip_strategy", {})),
+            },
             "game_performance": game_performance,
             "underperforming_patterns": {
                 "titles": title_patterns["losing"],
@@ -202,11 +212,13 @@ class ContentDNABuilder:
 
         # Words that appear in top but not in bottom
         winning = [
-            w for w, c in top_words.most_common(20)
+            w
+            for w, c in top_words.most_common(20)
             if c >= 2 and bottom_words.get(w, 0) < c
         ]
         losing = [
-            w for w, c in bottom_words.most_common(10)
+            w
+            for w, c in bottom_words.most_common(10)
             if c >= 2 and top_words.get(w, 0) < c
         ]
         return {"winning": winning[:10], "losing": losing[:5]}
@@ -216,7 +228,15 @@ class ContentDNABuilder:
         day_scores: defaultdict[str, list[float]] = defaultdict(list)
         hour_scores: defaultdict[int, list[float]] = defaultdict(list)
 
-        day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        day_names = [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ]
 
         for v in videos:
             pub = v.get("published_at")
@@ -228,13 +248,17 @@ class ContentDNABuilder:
 
         best_days = sorted(
             day_scores.keys(),
-            key=lambda d: sum(day_scores[d]) / len(day_scores[d]) if day_scores[d] else 0,
+            key=lambda d: (
+                sum(day_scores[d]) / len(day_scores[d]) if day_scores[d] else 0
+            ),
             reverse=True,
         )[:3]
 
         best_hours = sorted(
             hour_scores.keys(),
-            key=lambda h: sum(hour_scores[h]) / len(hour_scores[h]) if hour_scores[h] else 0,
+            key=lambda h: (
+                sum(hour_scores[h]) / len(hour_scores[h]) if hour_scores[h] else 0
+            ),
             reverse=True,
         )[:4]
 
@@ -274,15 +298,19 @@ class ContentDNABuilder:
             "cta_potential": 0.10,
         }
 
-    def _build_stats_summary(
-        self, top: list[dict], bottom: list[dict]
-    ) -> str:
+    def _build_stats_summary(self, top: list[dict], bottom: list[dict]) -> str:
         """Build a compact stats summary string for AI prompts."""
         lines = [
             f"Top performers ({len(top)} videos):",
-            *[f"  - '{v['title'][:60]}' | {v['total_views']} views | {v['views_per_day']:.1f} vpd" for v in top[:5]],
+            *[
+                f"  - '{v['title'][:60]}' | {v['total_views']} views | {v['views_per_day']:.1f} vpd"
+                for v in top[:5]
+            ],
             f"\nUnderperformers ({len(bottom)} videos):",
-            *[f"  - '{v['title'][:60]}' | {v['total_views']} views | {v['views_per_day']:.1f} vpd" for v in bottom[:5]],
+            *[
+                f"  - '{v['title'][:60]}' | {v['total_views']} views | {v['views_per_day']:.1f} vpd"
+                for v in bottom[:5]
+            ],
         ]
         return "\n".join(lines)
 
@@ -297,7 +325,9 @@ class ContentDNABuilder:
                 "relatability": 0.20,
                 "cta_potential": 0.10,
             }
-        top = sorted(rows, key=lambda r: r["total_views"], reverse=True)[: len(rows) // 4 or 1]
+        top = sorted(rows, key=lambda r: r["total_views"], reverse=True)[
+            : len(rows) // 4 or 1
+        ]
         return self._calibrate_weights(top)
 
     async def identify_unclipped_viral_potential(
@@ -341,7 +371,9 @@ class ContentDNABuilder:
             has_retention = bool(r.get("has_retention", 0))
 
             # Scoring heuristic
-            score = min(100, views / 10 + (duration / 60) * 0.5 + (20 if has_retention else 0))
+            score = min(
+                100, views / 10 + (duration / 60) * 0.5 + (20 if has_retention else 0)
+            )
 
             estimated_clips = max(3, int(duration / 300))  # ~1 clip per 5 min
             peak_count = len(r.get("all_peaks", []) or [])
@@ -366,4 +398,6 @@ class ContentDNABuilder:
                 )
             )
 
-        return sorted(opportunities, key=lambda o: o.viral_potential_score, reverse=True)
+        return sorted(
+            opportunities, key=lambda o: o.viral_potential_score, reverse=True
+        )

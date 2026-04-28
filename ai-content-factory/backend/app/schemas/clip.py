@@ -1,4 +1,5 @@
 """Clip Pydantic schemas."""
+
 import uuid
 from datetime import datetime
 from typing import Literal, Optional
@@ -55,6 +56,7 @@ class ClipUpdateRequest(BaseModel):
 
 class ClipPublishSettingsRequest(BaseModel):
     """Save YouTube publish settings before queuing."""
+
     title: Optional[str] = None
     description: Optional[str] = None
     hashtags: Optional[list[str]] = None

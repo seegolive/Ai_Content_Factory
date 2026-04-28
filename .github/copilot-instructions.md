@@ -266,9 +266,149 @@ Each stage checks `video.checkpoint_index` before running — if already past th
 ## Quick Commands
 
 ```bash
-make dev          # Start all Docker services
+make dev          # Start all Docker services (backend+postgres+redis+celery)
 make test         # Run pytest
 make migrate      # Apply DB migrations
 make logs-worker  # Tail Celery worker logs
 make flower       # Celery monitor at :5555
+make gpu-test     # Verify CUDA is available for Whisper
+# Frontend runs OUTSIDE docker: cd frontend && npm run dev
 ```
+
+---
+
+## 12. Current Implementation Status (as of 2026-04-28)
+
+> **Read the actual files before assuming something is done.** This table is a snapshot.
+
+| Layer | Status | Notes |
+|-------|--------|-------|
+| API Routes (`api/routes/`) | ✅ 95% | 30+ endpoints implemented; see gaps below |
+| Data Models (`models/`) | ✅ 100% | 8 models, all with migrations |
+| Pydantic Schemas (`schemas/`) | ✅ 100% | Video, Clip, User fully typed |
+| Services (`services/`) | ⚠️ 90% | **`game_detector.py` MISSING** |
+| Celery Pipeline (`workers/tasks/pipeline.py`) | ✅ COMPLETE | Checkpoint-resumable, 6 stages |
+| Celery Distribution (`workers/tasks/distribute.py`) | ✅ COMPLETE | YouTube upload |
+| Celery Analytics (`workers/tasks/analytics.py`) | ✅ COMPLETE | Daily + weekly beat |
+| Standalone Celery Stubs | ⚠️ STUB | `transcribe.py`, `analyze.py`, `process_video.py` all have `pass` — pipeline handles inline, stubs are intentional |
+| Frontend Pages (`src/app/`) | ✅ 90% | 10 pages routable |
+| Frontend Components | ✅ 85% | 13 components built |
+| Tests (`tests/`) | ⚠️ 60% | Happy-path only; no Celery integration tests |
+| Docker Compose | ✅ COMPLETE | 5 services; **frontend NOT containerized** |
+
+### AI Provider Fallback Chain (in `ai_brain.py`)
+```
+Groq (free, fastest) → Gemini Flash (paid, balanced) → GPT-4o-mini (slow fallback)
+```
+
+---
+
+## 13. Known Gaps & Priority TODOs
+
+**Critical — implement before production:**
+
+1. **`services/game_detector.py` MISSING** — referenced in workspace but file doesn't exist. Needs OpenCV frame-sampling + game title extraction. Used by pipeline Stage 2 (AI scoring).
+
+2. **Rate limiting on upload endpoints** — `/videos/upload` and `/videos/from-url` have no rate limit. Add `slowapi` limiter (≤5 uploads/hour/user).
+
+3. **Secure clip streaming** — `/clips/{id}/stream` lacks signed URL / expiry / HTTP range request support. Implement token-based file serving.
+
+4. **Temp file cleanup** — extracted audio (`.wav`) and frame files not deleted after pipeline. Add cleanup step at Stage 5 end or a separate GC Celery beat task.
+
+5. **Bulk clip race condition** — `/clips/review/bulk` updates rows without `SELECT FOR UPDATE`. Add explicit transaction lock to prevent lost updates.
+
+**Medium — polish & reliability:**
+
+6. **YouTube token refresh edge case** — if refresh fails during `distribute_clip`, user gets no notification. Add fallback to `notification.py` + status indicator in UI.
+
+7. **Pipeline retry UI** — `video.error` is set on failure but no "Retry" button in frontend `/videos/[id]` page. Add retry trigger via `POST /videos/{id}/retry`.
+
+8. **Client-side form validation** — publish form (`/publish/[clipId]`) missing Zod schema validation on title/description length.
+
+9. **In-app notifications** — if Telegram + SendGrid both fail, pipeline completion is silent. Add notification badge + `/notifications` history endpoint.
+
+10. **Celery task tests** — `workers/tasks/pipeline.py` has zero test coverage. Add integration tests using `celery_worker` pytest fixture.
+
+**Deferred / future:**
+
+- BrandKit (`models/brand_kit.py`) is modeled but has no routes or service logic
+- SDXL thumbnail generation referenced in BrandKit but not implemented
+- Frontend has no Cypress/Playwright E2E tests
+- `frontend/` not in docker-compose (runs with `npm run dev` outside Docker)
+
+---
+
+## 15. Available Skills
+
+Skills auto-load when relevant. Invoke explicitly with `/skill-name` or describe what you need.
+
+### Project-Specific Skills
+| Skill | Description |
+|-------|-------------|
+| `add-api-endpoint` | Add FastAPI endpoint (schema + service + route + test) |
+| `add-celery-task` | Add background job or pipeline stage |
+| `add-db-migration` | Create Alembic migration |
+| `implement-gap` | Implement a known gap from Section 13 |
+| `write-tests` | Write pytest tests for services/APIs/workers |
+| `implement-game-detector` | Build missing `game_detector.py` service |
+
+### Code Quality & Security
+| Skill | Description |
+|-------|-------------|
+| `security-review` | Full security audit: SQLi, XSS, IDOR, secrets, auth |
+| `sql-code-review` | SQL security, performance, anti-patterns review |
+| `ruff-recursive-fix` | Iterative Python linting with Ruff |
+| `refactor` | Surgical code refactoring without changing behavior |
+| `doublecheck` | 3-layer verification pipeline for AI-generated claims |
+| `secret-scanning` | Configure GitHub secret scanning & push protection |
+
+### Database
+| Skill | Description |
+|-------|-------------|
+| `postgresql-optimization` | PostgreSQL JSONB, arrays, window functions, indexes |
+
+### Testing
+| Skill | Description |
+|-------|-------------|
+| `pytest-coverage` | Run coverage reports and fill missing test coverage |
+| `webapp-testing` | Browser testing via Playwright for frontend |
+| `playwright-generate-test` | Generate Playwright E2E tests from scenarios |
+
+### Frontend & UI
+| Skill | Description |
+|-------|-------------|
+| `web-design-reviewer` | Visual UI review: layout, responsive, accessibility |
+| `premium-frontend-ui` | Immersive UI craftsmanship (animations, motion design) |
+
+### DevOps & Infrastructure
+| Skill | Description |
+|-------|-------------|
+| `multi-stage-dockerfile` | Optimized multi-stage Dockerfiles |
+| `acquire-codebase-knowledge` | Generate 7 docs covering full codebase architecture |
+
+### Documentation & Git Workflow
+| Skill | Description |
+|-------|-------------|
+| `documentation-writer` | Diátaxis-based technical documentation |
+| `create-readme` | Generate comprehensive README.md |
+| `git-commit` | Conventional commit messages from diff analysis |
+| `conventional-commit` | Guided conventional commit workflow |
+| `gh-cli` | GitHub CLI (gh) full reference |
+| `github-issues` | Create/manage GitHub issues via MCP or gh CLI |
+
+---
+
+## 14. Key File Reference
+
+| What you need | File |
+|---------------|------|
+| Pipeline logic (all 6 stages) | `backend/app/workers/tasks/pipeline.py` |
+| Viral scoring prompts | `backend/app/services/ai_brain.py` |
+| Checkpoint enum + helper | `backend/app/workers/tasks/pipeline.py` (top of file) |
+| Auth dependency | `backend/app/api/dependencies.py` |
+| All env vars + defaults | `backend/.env.example` (57 vars) |
+| Celery queues + beat schedule | `backend/app/workers/celery_app.py` |
+| Analytics data flow | `backend/app/services/analytics/` |
+| Design tokens | `frontend/tailwind.config.ts` + `design-tokens.md` |
+| API client (frontend) | `frontend/src/lib/api.ts` |
+| React Query hooks | `frontend/src/lib/queries.ts` |

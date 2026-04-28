@@ -1,4 +1,5 @@
 """Clips review and management routes."""
+
 import os
 import re
 import uuid
@@ -7,7 +8,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials
 from loguru import logger
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +40,9 @@ async def _get_clip_or_404(
     )
     clip = result.scalar_one_or_none()
     if not clip:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found"
+        )
     return clip
 
 
@@ -52,25 +55,20 @@ async def get_clip_stats(
     # Base: all clips belonging to user
     base = select(func.count()).select_from(Clip).where(Clip.user_id == current_user.id)
 
-    total_result          = await db.execute(base)
-    pending_result        = await db.execute(base.where(Clip.review_status == "pending"))
-    approved_result       = await db.execute(base.where(Clip.review_status == "approved"))
-    rejected_result       = await db.execute(base.where(Clip.review_status == "rejected"))
+    total_result = await db.execute(base)
+    pending_result = await db.execute(base.where(Clip.review_status == "pending"))
+    approved_result = await db.execute(base.where(Clip.review_status == "approved"))
+    rejected_result = await db.execute(base.where(Clip.review_status == "rejected"))
 
     # published = has at least one platform_status entry with status="published"
-    # We query directly in Python after fetching published rows
-    published_result = await db.execute(
-        select(func.count()).select_from(Clip).where(
-            Clip.user_id == current_user.id,
-            Clip.platform_status.isnot(None),
-        )
-    )
-    # Narrow count: only clips where ANY platform value has status=published
     # Use a JSON containment query via cast
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy import cast, literal
+
     published_count_result = await db.execute(
-        select(func.count()).select_from(Clip).where(
+        select(func.count())
+        .select_from(Clip)
+        .where(
             Clip.user_id == current_user.id,
             Clip.platform_status.cast(JSONB).op("@>")(
                 cast(literal('{"youtube": {"status": "published"}}'), JSONB)
@@ -79,10 +77,10 @@ async def get_clip_stats(
     )
 
     return {
-        "total":     total_result.scalar() or 0,
-        "pending":   pending_result.scalar() or 0,
-        "approved":  approved_result.scalar() or 0,
-        "rejected":  rejected_result.scalar() or 0,
+        "total": total_result.scalar() or 0,
+        "pending": pending_result.scalar() or 0,
+        "approved": approved_result.scalar() or 0,
+        "rejected": rejected_result.scalar() or 0,
         "published": published_count_result.scalar() or 0,
     }
 
@@ -105,7 +103,9 @@ async def list_clips(
         select(Video.id).where(Video.id == video_id, Video.user_id == current_user.id)
     )
     if not video_result.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
+        )
 
     query = select(Clip).where(Clip.video_id == video_id)
     if qc_status:
@@ -159,7 +159,7 @@ async def save_publish_settings(
         settings_update["hashtags"] = body.hashtags
     if body.category is not None:
         settings_update["category"] = body.category
-    clip.publish_settings = {**clip.publish_settings, **settings_update}
+    clip.publish_settings = {**(clip.publish_settings or {}), **settings_update}
     await db.commit()
     return ClipOut.model_validate(clip)
 
@@ -189,23 +189,25 @@ async def bulk_review(
     new_status = "approved" if body.action == "approve" else "rejected"
     now = datetime.now(timezone.utc)
 
+    # Lock the rows first to prevent lost-update race condition when two
+    # concurrent bulk-review requests target the same clip IDs.
+    locked = await db.execute(
+        select(Clip.id)
+        .where(Clip.id.in_(body.clip_ids), Clip.user_id == current_user.id)
+        .with_for_update()
+    )
+    locked_ids = [row[0] for row in locked.fetchall()]
+
+    if not locked_ids:
+        return {"updated": 0, "review_status": new_status}
+
     await db.execute(
         update(Clip)
-        .where(Clip.id.in_(body.clip_ids), Clip.user_id == current_user.id)
+        .where(Clip.id.in_(locked_ids))
         .values(review_status=new_status, reviewed_at=now)
     )
     await db.commit()
-    # Use rowcount for accurate count of actually-updated rows
-    from sqlalchemy import func
-    count_result = await db.execute(
-        select(func.count(Clip.id)).where(
-            Clip.id.in_(body.clip_ids),
-            Clip.user_id == current_user.id,
-            Clip.review_status == new_status,
-        )
-    )
-    updated_count = count_result.scalar_one()
-    return {"updated": updated_count, "review_status": new_status}
+    return {"updated": len(locked_ids), "review_status": new_status}
 
 
 @router.patch("/clips/{clip_id}", response_model=ClipOut)
@@ -245,6 +247,7 @@ async def publish_clip(
     # Verify YouTube account ownership before dispatching,
     # or auto-select the user's first YouTube account if none specified.
     from app.models.video import YoutubeAccount
+
     resolved_youtube_account_id = body.youtube_account_id
     if "youtube" in body.platforms:
         if resolved_youtube_account_id:
@@ -255,11 +258,16 @@ async def publish_clip(
                 )
             )
             if not yt_result.scalar_one_or_none():
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="YouTube account not found")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="YouTube account not found",
+                )
         else:
             # Auto-select the user's first connected YouTube account
             yt_result = await db.execute(
-                select(YoutubeAccount).where(YoutubeAccount.user_id == current_user.id).limit(1)
+                select(YoutubeAccount)
+                .where(YoutubeAccount.user_id == current_user.id)
+                .limit(1)
             )
             yt_account = yt_result.scalar_one_or_none()
             if yt_account:
@@ -272,6 +280,7 @@ async def publish_clip(
 
     try:
         from app.workers.tasks.distribute import distribute_clip
+
         task = distribute_clip.delay(
             str(clip_id),
             body.platforms,
@@ -282,7 +291,8 @@ async def publish_clip(
     except Exception as e:
         logger.error(f"Failed to queue distribution for clip {clip_id}: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to queue publish"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue publish",
         )
 
 
@@ -312,7 +322,9 @@ async def get_stream_token(
     """
     clip = await _get_clip_or_404(clip_id, current_user.id, db)
     if not clip.clip_path:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found"
+        )
 
     token = create_access_token(
         {"sub": str(current_user.id), "type": "stream", "clip_id": str(clip_id)},
@@ -325,8 +337,12 @@ async def get_stream_token(
 async def stream_clip(
     clip_id: uuid.UUID,
     request: Request,
-    token: Optional[str] = Query(None, description="Short-lived stream token from /stream-token"),
-    format: Optional[str] = Query(None, description="'vertical' to stream 9:16 version"),
+    token: Optional[str] = Query(
+        None, description="Short-lived stream token from /stream-token"
+    ),
+    format: Optional[str] = Query(
+        None, description="'vertical' to stream 9:16 version"
+    ),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ):
@@ -339,25 +355,35 @@ async def stream_clip(
     # Resolve token from query param or Authorization header
     raw_token = token or (credentials.credentials if credentials else None)
     if not raw_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
 
     user_id = verify_token(raw_token)
     if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        )
 
     # Verify clip ownership
-    result = await db.execute(
-        select(Clip).where(Clip.id == clip_id)
-    )
+    result = await db.execute(select(Clip).where(Clip.id == clip_id))
     clip = result.scalar_one_or_none()
     if not clip or str(clip.user_id) != user_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Clip not found"
+        )
 
     # Resolve which file to serve based on format param
-    if format == "vertical" and clip.clip_path_vertical and os.path.exists(clip.clip_path_vertical):
+    if (
+        format == "vertical"
+        and clip.clip_path_vertical
+        and os.path.exists(clip.clip_path_vertical)
+    ):
         file_path = clip.clip_path_vertical
     elif not clip.clip_path or not os.path.exists(clip.clip_path):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Clip file not found"
+        )
     else:
         file_path = clip.clip_path
 

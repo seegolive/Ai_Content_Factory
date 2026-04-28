@@ -1,9 +1,10 @@
 """User Pydantic schemas."""
+
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 
 class YoutubeAccountOut(BaseModel):

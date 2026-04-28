@@ -1,9 +1,9 @@
 """ACRCloud-based copyright detection service."""
+
 import asyncio
 import base64
 import hashlib
 import hmac
-import os
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -24,14 +24,16 @@ class CopyrightResult:
 
 
 class CopyrightCheckService:
-
     async def check_audio(self, video_path: str) -> CopyrightResult:
         """Extract audio sample and check against ACRCloud."""
         if not settings.ACRCLOUD_ACCESS_KEY:
             logger.warning("ACRCloud not configured, skipping copyright check")
             return CopyrightResult(
-                is_flagged=False, matched_music=None, artist=None,
-                confidence=0.0, status="unchecked"
+                is_flagged=False,
+                matched_music=None,
+                artist=None,
+                confidence=0.0,
+                status="unchecked",
             )
 
         try:
@@ -40,17 +42,24 @@ class CopyrightCheckService:
         except Exception as e:
             logger.error(f"Copyright check failed for {video_path}: {e}")
             return CopyrightResult(
-                is_flagged=False, matched_music=None, artist=None,
-                confidence=0.0, status="uncertain"
+                is_flagged=False,
+                matched_music=None,
+                artist=None,
+                confidence=0.0,
+                status="uncertain",
             )
 
     async def extract_audio_sample(self, video_path: str, duration: int = 30) -> bytes:
         """Extract audio segment from the middle of the video as WAV bytes."""
         # Get video duration first
         probe_cmd = [
-            "ffprobe", "-v", "quiet",
-            "-show_entries", "format=duration",
-            "-of", "csv=p=0",
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
             video_path,
         ]
         proc = await asyncio.create_subprocess_exec(
@@ -64,13 +73,20 @@ class CopyrightCheckService:
 
         # Extract audio
         extract_cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(start),
-            "-t", str(duration),
-            "-i", video_path,
-            "-ac", "1",
-            "-ar", "44100",
-            "-f", "wav",
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(start),
+            "-t",
+            str(duration),
+            "-i",
+            video_path,
+            "-ac",
+            "1",
+            "-ar",
+            "44100",
+            "-f",
+            "wav",
             "pipe:1",
         ]
         proc = await asyncio.create_subprocess_exec(
@@ -84,14 +100,16 @@ class CopyrightCheckService:
     async def _query_acrcloud(self, audio_bytes: bytes) -> CopyrightResult:
         """Send audio to ACRCloud API."""
         timestamp = str(int(time.time()))
-        string_to_sign = "\n".join([
-            "POST",
-            "/v1/identify",
-            settings.ACRCLOUD_ACCESS_KEY,
-            "audio",
-            "1",
-            timestamp,
-        ])
+        string_to_sign = "\n".join(
+            [
+                "POST",
+                "/v1/identify",
+                settings.ACRCLOUD_ACCESS_KEY,
+                "audio",
+                "1",
+                timestamp,
+            ]
+        )
         signature = base64.b64encode(
             hmac.new(
                 settings.ACRCLOUD_ACCESS_SECRET.encode(),
@@ -128,6 +146,18 @@ class CopyrightCheckService:
                     status="flagged",
                 )
         elif status_code == 1001:  # No result
-            return CopyrightResult(is_flagged=False, matched_music=None, artist=None, confidence=0.0, status="clean")
+            return CopyrightResult(
+                is_flagged=False,
+                matched_music=None,
+                artist=None,
+                confidence=0.0,
+                status="clean",
+            )
 
-        return CopyrightResult(is_flagged=False, matched_music=None, artist=None, confidence=0.0, status="uncertain")
+        return CopyrightResult(
+            is_flagged=False,
+            matched_music=None,
+            artist=None,
+            confidence=0.0,
+            status="uncertain",
+        )

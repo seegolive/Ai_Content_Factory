@@ -1,4 +1,5 @@
 """YoutubeAccount and Video models."""
+
 import uuid
 from datetime import datetime
 
@@ -13,21 +14,31 @@ from app.core.database import Base
 class YoutubeAccount(Base):
     __tablename__ = "youtube_accounts"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     channel_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     channel_name: Mapped[str] = mapped_column(String(255), nullable=True)
     access_token: Mapped[str] = mapped_column(Text, nullable=True)
     refresh_token: Mapped[str] = mapped_column(Text, nullable=True)
-    token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     content_dna: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     # Relationships
@@ -41,7 +52,9 @@ class YoutubeAccount(Base):
 class Video(Base):
     __tablename__ = "videos"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -68,17 +81,24 @@ class Video(Base):
         nullable=False,
     )
     transcript: Mapped[str] = mapped_column(Text, nullable=True)
-    transcript_segments: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    transcript_segments: Mapped[list] = mapped_column(
+        JSONB, default=list, nullable=False
+    )
     celery_task_id: Mapped[str] = mapped_column(String(255), nullable=True)
     ai_provider_used: Mapped[str] = mapped_column(String(100), nullable=True)
     thumbnail_url: Mapped[str] = mapped_column(Text, nullable=True)
     download_progress: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
-    quality_preference: Mapped[str] = mapped_column(String(20), nullable=True, default="1440p")
+    quality_preference: Mapped[str] = mapped_column(
+        String(20), nullable=True, default="1440p"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     # Relationships
