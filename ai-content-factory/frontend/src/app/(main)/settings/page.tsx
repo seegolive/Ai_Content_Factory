@@ -215,7 +215,7 @@ export default function SettingsPage() {
                 lineHeight: 1.6,
               }}>
                 <strong style={{ color: "var(--text-2)" }}>Why connect?</strong>
-                {" "}Your YouTube account data (channel info, subscribers) is pulled via the Google OAuth token obtained at login. If it shows "expired", sign out and sign in again to refresh the token.
+                {" "}Your YouTube account data (channel info, subscribers) is pulled via the Google OAuth token obtained at login. If it shows &quot;expired&quot;, sign out and sign in again to refresh the token.
               </div>
             </div>
           </div>

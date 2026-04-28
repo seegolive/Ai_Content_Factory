@@ -73,8 +73,9 @@ export function VideoUploader({ onSuccess }: VideoUploaderProps) {
         toast.success("Video uploaded! Processing started.");
         onSuccess?.(result.video_id);
         setUploadProgress(0);
-      } catch (err: any) {
-        toast.error(err.response?.data?.detail ?? "Upload failed");
+      } catch (err: unknown) {
+        const e = err as { response?: { data?: { detail?: string } } };
+        toast.error(e.response?.data?.detail ?? "Upload failed");
         setUploadProgress(0);
       }
     },
@@ -97,8 +98,9 @@ export function VideoUploader({ onSuccess }: VideoUploaderProps) {
       onSuccess?.(res.data.video_id);
       setYoutubeUrl("");
       setPreview(null);
-    } catch (err: any) {
-      toast.error(err.response?.data?.detail ?? "Failed to queue URL");
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } } };
+      toast.error(e.response?.data?.detail ?? "Failed to queue URL");
     } finally {
       setUrlLoading(false);
     }
