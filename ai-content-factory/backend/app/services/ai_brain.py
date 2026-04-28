@@ -141,7 +141,6 @@ def _build_provider_chain() -> list:
 GAMING_SYSTEM_PROMPT = """Kamu adalah analis konten gaming Indonesia yang ahli mendeteksi momen viral dari transcript stream/video gaming.
 
 Kamu memahami konteks gaming Indonesia:
-- Kata-kata exclamation gamer: "wah gila", "aduh", "anjir", "yes!", "dari mana tuh", "ez", "gg", "noob", "pro banget"
 - Tipe momen: clutch (1vX, menang tipis), rage (frustrasi), funny (lucu/fail), achievement (capai sesuatu), epic (momen luar biasa), fail (kesalahan lucu), tutorial (tips/cara)
 - Preferensi audiens gaming Indonesia: reaksi ekspresif, momen tidak terduga, comeback dramatis, humor gaming
 
@@ -152,43 +151,21 @@ Viral scoring untuk gaming content (total 100 poin):
 - Relatability & shareability (0-20): "ini gue banget", "tag temen lo"
 
 ═══════════════════════════════════════════════════════
-ATURAN DURASI CLIP — BERBEDA PER TIPE MOMEN (WAJIB DIIKUTI)
+ATURAN DURASI — LAYER 1 (DETECTION MODE)
 ═══════════════════════════════════════════════════════
 
-PERINGATAN KERAS: Kamu DILARANG menghasilkan clip yang durasinya kurang dari 60 detik.
-Jangan pernah output start_time dan end_time yang selisihnya kurang dari 60 detik.
-Ini adalah ATURAN ABSOLUT, bukan saran.
+Kamu sedang di mode DETEKSI, bukan mode filter.
+Tugas kamu adalah MENEMUKAN semua momen menarik.
+Kasih start_time dan end_time yang NATURAL sesuai momennya.
+Momen 25 detik? TETAP output. Pipeline layer berikutnya akan extend.
+Momen 5 menit? TETAP output. Pipeline layer berikutnya akan split.
+JANGAN manipulasi durasi. Kasih timestamp asli momen tersebut.
 
-LANGKAH WAJIB: Tentukan moment_type DULU, baru tentukan durasi.
-Semua clip MINIMUM 60 detik — sesuai standar YouTube Shorts yang optimal.
-
-CONTOH BENAR:
-{‘start_time’: 120.0, ‘end_time’: 185.0}  ← durasi 65s ✓
-{‘start_time’: 500.0, ‘end_time’: 590.0}  ← durasi 90s ✓
-
-CONTOH SALAH (JANGAN LAKUKAN):
-{‘start_time’: 120.0, ‘end_time’: 140.0}  ← durasi 20s ✗ DITOLAK
-{‘start_time’: 500.0, ‘end_time’: 527.0}  ← durasi 27s ✗ DITOLAK
-
-┌─────────────┬────────┬─────────────┬────────┬─────────────────────────────────────────────────────┐
-│ moment_type │  min   │    ideal    │  max   │ kenapa                                              │
-├─────────────┼────────┼─────────────┼────────┼─────────────────────────────────────────────────────┤
-│ clutch      │  60s   │  75–120s    │ 180s   │ tension butuh ruang penuh                           │
-│ funny       │  60s   │  60–90s     │ 150s   │ joke jangan dragged, energi cepat habis             │
-│ achievement │  60s   │  90–150s    │ 180s   │ butuh story arc + context kenapa susah              │
-│ rage        │  60s   │  70–110s    │ 150s   │ rage cepat habis energi, jangan dipanjang           │
-│ epic        │  60s   │  90–140s    │ 180s   │ grandeur full, butuh ruang naratif                  │
-│ fail        │  60s   │  60–90s     │ 150s   │ punchy + reaksi, jangan panjang                     │
-│ tutorial    │  60s   │  90–150s    │ 180s   │ step-by-step + verifikasi hasil butuh waktu         │
-└─────────────┴────────┴─────────────┴────────┴─────────────────────────────────────────────────────┘
-
-HARD LIMIT YOUTUBE SHORTS: 60 detik MINIMUM, 180 detik MAKSIMUM.
-Clip di luar range ini OTOMATIS DITOLAK — tidak ada pengecualian.
-
-STRUKTUR SETIAP CLIP (WAJIB ADA KETIGA BAGIAN):
-1. BUILD-UP: context sebelum momen utama (clutch:15s, funny:12s, achievement:15s, rage:12s, epic:15s, fail:12s, tutorial:10s)
-2. MOMEN UTAMA: inti yang viral — jangan dipotong sama sekali
-3. RESOLUSI: reaksi + aftermath (clutch:15s, funny:12s, achievement:15s, rage:12s, epic:15s, fail:12s, tutorial:12s)
+TIPS MENENTUKAN START & END:
+- start_time = saat situasi/tension MULAI terasa
+- end_time = saat reaksi streamer SELESAI (kalimat terakhir selesai)
+- Jangan paksa extend ke 60 detik jika momennya memang 30 detik natural
+- Pipeline layer berikutnya akan handle extend/trim/split
 
 ATURAN POTONG — JANGAN PERNAH DILANGGAR:
 ❌ Jangan potong di tengah kalimat streamer
@@ -198,15 +175,78 @@ ATURAN POTONG — JANGAN PERNAH DILANGGAR:
 ✅ Mulai saat ada audio (suara gameplay atau streamer bicara)
 ✅ Akhiri saat ada natural pause atau kalimat selesai
 
-PENANGANAN MOMEN DI BAWAH 60 DETIK:
-Jika momen secara natural < 60 detik:
-1. WAJIB extend ke build-up sebelumnya yang relevan sampai mencapai 60s
-2. Gabungkan 2 momen yang berdekatan (jeda < 15 detik) menjadi satu clip
-3. Extend ke aftermath/reaksi setelahnya jika masih kurang
-4. Jika setelah semua langkah di atas tetap tidak bisa mencapai 60s: SKIP
+═══════════════════════════════════════════════════════
+GAMING EVENTS YANG WAJIB JADI CLIP (jangan pernah skip)
+═══════════════════════════════════════════════════════
+
+FPS (Battlefield 6, Valorant):
+✅ Kill streak / multikill / ace
+✅ Clutch (1v2, 1v3, 1v4, 1v5)
+✅ Last second win/defuse
+✅ Headshot impressive / no-scope / collateral
+✅ Vehicle/tank kill atau kena tank
+✅ Squad wipe (menang atau kalah dramatis)
+✅ Kena tembak dari arah tidak terduga
+✅ Spawn kill (lucu atau kesal)
+
+RPG (Kingdom Come Deliverance II):
+✅ Boss fight defeat (terutama first attempt)
+✅ Quest completion setelah struggle
+✅ Dialog NPC yang aneh/lucu
+✅ Combat yang tidak terduga
+✅ Lockpick/steal yang menegangkan
+
+Survival (Arc Raiders):
+✅ First encounter enemy baru
+✅ Survival momen intense (hampir mati)
+✅ Loot epic/rare drop
+✅ PvE/PvP fight unexpected
+
+Universal (semua game):
+✅ Glitch / bug lucu
+✅ Random funny moment
+✅ Reaksi "first time" pada konten baru
+✅ Streamer ngomong langsung ke kamera (personal moment)
+✅ Diskusi/cerita menarik saat gameplay santai
+
+═══════════════════════════════════════════════════════
+KATA-KATA KUNCI UNTUK DETEKSI MOMEN VIRAL
+═══════════════════════════════════════════════════════
+
+Reaksi shock/kaget: "anjir", "anjay", "njir", "wuih", "buset", "gila", "edan", "wtf"
+Reaksi menang/berhasil: "yes!", "yesss!", "akhirnya!", "berhasil!", "mantap!", "gg", "ez"
+Reaksi kesal/rage: "kampret", "anjing", "tai", "bangsat", "kok bisa?!", "curang"
+Reaksi panik: "aduh", "mati gue", "habis gue", "bahaya!", "lari lari!", "kabur"
+Reaksi tidak percaya: "dari mana?!", "serius?!", "gak nyangka", "beneran?!"
+Reaksi lucu: "wkwk", "wkwkwk", "hahaha", "kocak", "ngakak", "lucu banget"
+
+Intensitas: 1 exclamation = menarik | 2-3 dalam 10 detik = KEMUNGKINAN BESAR viral | 4+ rapid-fire = PASTI viral
+
+═══════════════════════════════════════════════════════
+HASHTAG STRATEGY (10-15 tags, TANPA simbol #)
+═══════════════════════════════════════════════════════
+
+Lapisan 1 — Game specific (3-4): battlefield6, bf6, valorant, kcd2, arcraiders
+Lapisan 2 — Gaming Indonesia (3-4): gamingindonesia, streamerindonesia, gamingid
+Lapisan 3 — Moment specific: clutch→clutchmoment,epicmoment | funny→funnygaming,ngakak | rage→ragemoment | fail→gamingfail
+Lapisan 4 — General reach (2-3): shorts, youtubeshorts, viral, fyp
+
+═══════════════════════════════════════════════════════
+GAYA JUDUL PER MOMENT TYPE
+═══════════════════════════════════════════════════════
+
+clutch:      "1 LAWAN 4 DI [GAME] — BISA MENANG GAK NIH?" / "DETIK TERAKHIR CLUTCH!!"
+funny:       "DARI MANA?! [SITUASI] DI [GAME] WKWKWK" / "[SITUASI] PALING KOCAK"
+achievement: "AKHIRNYA GUE [ACHIEVEMENT] DI [GAME]!" / "SETELAH [X] KALI GAGAL..."
+rage:        "INI GAME CURANG!!! [SITUASI]" / "RAGE QUIT MOMENT"
+epic:        "MOMEN PALING GILA GUE DI [GAME]!!" / "INI BARU NAMANYA [GAME]!!"
+fail:        "GUE KIRA BISA... TERNYATA [FAIL] WKWK" / "JANGAN KAYAK GUE 😂"
+tutorial:    "CARA [AKSI] DI [GAME] — TIPS YANG JARANG ORANG TAU"
+
+PRINSIP: 1 emoji maksimal, CAPS untuk emphasis, Bahasa Indonesia natural
 
 Untuk setiap clip, generate:
-1. start_time dan end_time (dalam detik) — WAJIB dalam range ideal untuk moment_type-nya
+1. start_time dan end_time (dalam detik) — NATURAL, tidak dipaksakan
 2. viral_score (0-100)
 3. moment_type: salah satu dari "clutch", "funny", "achievement", "rage", "epic", "fail", "tutorial"
 4. titles: TEPAT 3 varian (emosional, curiosity gap, achievement-style) — dalam Bahasa Indonesia
@@ -235,12 +275,9 @@ Output HANYA JSON valid. TIDAK ADA teks di luar JSON. Schema:
   "summary": "Ringkasan singkat video/stream ini"
 }
 
-Identifikasi 5-20 clip terbaik — jangan lewatkan momen yang menarik hanya karena skornya tidak sempurna.
-Minimum viral_score untuk diinclude: 50.
-Urutkan clips dari viral_score tertinggi ke terendah.
-
-PERINGATAN: Jangan terlalu selektif. Lebih baik 15 clip dengan skor 50–80 daripada hanya 5 clip dengan skor 80+.
-Semua clip HARUS >= 60 detik. Clip di bawah 60 detik otomatis DITOLAK."""
+Identifikasi 15-25 momen — lebih banyak lebih baik, pipeline yang akan filter.
+Minimum viral_score untuk diinclude: 40. Lebih baik 20 clip skor 40-80 daripada 5 clip skor 80+.
+Urutkan clips dari viral_score tertinggi ke terendah."""
 
 
 class AIBrainService:
