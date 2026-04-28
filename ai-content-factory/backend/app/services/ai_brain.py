@@ -166,6 +166,8 @@ TIPS MENENTUKAN START & END:
 - end_time = saat reaksi streamer SELESAI (kalimat terakhir selesai)
 - Jangan paksa extend ke 60 detik jika momennya memang 30 detik natural
 - Pipeline layer berikutnya akan handle extend/trim/split
+- MINIMAL 15 detik per momen — momen viral tidak mungkin hanya 2-3 detik
+  (jika hanya 1 kalimat saja, extend ke konteks sekitarnya sampai ~15-30 detik)
 
 ATURAN POTONG — JANGAN PERNAH DILANGGAR:
 ❌ Jangan potong di tengah kalimat streamer
@@ -375,7 +377,8 @@ class AIBrainService:
         start = time.perf_counter()
 
         # Build segments text — smart chunk sampling to preserve burst moments.
-        MAX_SEGMENTS_CHARS = 70_000
+        # 15k chars keeps HTTP payload <30KB, within Groq's request size limit.
+        MAX_SEGMENTS_CHARS = 15_000
         segments_text = self._smart_sample_segments(
             transcript.segments, MAX_SEGMENTS_CHARS
         )
@@ -398,6 +401,9 @@ Video duration: {transcript.duration:.1f} detik ({transcript.duration/60:.1f} me
 Language: {transcript.language}
 Word count: {transcript.word_count}
 {context_block}
+
+INGAT: Setiap clip MINIMUM 15 detik. Pilih range yang mencakup konteks sebelum dan sesudah momen utama.
+Jangan pilih hanya 1 kalimat — itu terlalu pendek. Minimal 3-5 kalimat per clip.
 
 TRANSCRIPT:
 {segments_text}
