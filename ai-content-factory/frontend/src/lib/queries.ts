@@ -3,9 +3,8 @@ import {
   useQuery,
   useMutation,
   useQueryClient,
-  UseQueryOptions,
 } from "@tanstack/react-query";
-import { clipsApi, videosApi, youtubeApi, type YTChannelAnalytics } from "@/lib/api";
+import { analyticsApi, clipsApi, videosApi, youtubeApi, type YTChannelAnalytics } from "@/lib/api";
 import type { Clip, Video, VideoDetail } from "@/types";
 
 // ── Videos ──────────────────────────────────────────────────────────────────
@@ -14,7 +13,16 @@ export function useVideos(params?: { status?: string }) {
   return useQuery({
     queryKey: ["videos", params],
     queryFn: () => videosApi.list(params).then((r) => r.data),
-    staleTime: 30_000,
+    // Poll actively when filtering for processing/queued, or when list contains active videos
+    refetchInterval: (query) => {
+      if (params?.status === "processing" || params?.status === "queued") return 5_000;
+      const videos = query.state.data ?? [];
+      const hasActive = videos.some(
+        (v: { status: string }) => v.status === "processing" || v.status === "queued"
+      );
+      return hasActive ? 8_000 : 30_000;
+    },
+    staleTime: 5_000,
     retry: 2,
   });
 }
@@ -98,9 +106,12 @@ export function useClipPublishStatus(clipId: string, enabled = true) {
     refetchInterval: (query) => {
       const status = query.state.data;
       if (!status) return 2_000;
-      const isTerminal = Object.values(status).every(
-        (s) => s.status === "published" || s.status === "failed" || s.status === "pending"
-      );
+      const values = Object.values(status);
+      const isTerminal =
+        values.length > 0 &&
+        values.every(
+          (s) => s.status === "published" || s.status === "failed" || s.status === "pending"
+        );
       return isTerminal ? false : 2_000;
     },
     staleTime: 0,
@@ -121,6 +132,7 @@ export function useReviewClip() {
     }) => clipsApi.review(clipId, action, note).then((r) => r.data),
     onSuccess: (_, { clipId }) => {
       qc.invalidateQueries({ queryKey: ["clips"] });
+      qc.invalidateQueries({ queryKey: ["clipStats"] });
     },
   });
 }
@@ -223,6 +235,16 @@ export function useYoutubeAnalytics() {
     queryKey: ["youtubeAnalytics"],
     queryFn: () => youtubeApi.getAnalytics().then((r) => r.data),
     staleTime: 5 * 60_000, // 5 min cache
+    retry: 1,
+  });
+}
+
+export function useAnalyticsDailyStats(channelId: string | undefined, days: number = 7) {
+  return useQuery({
+    queryKey: ["analyticsDailyStats", channelId, days],
+    queryFn: () => analyticsApi.getDailyStats(channelId!, days).then((r) => r.data),
+    enabled: !!channelId,
+    staleTime: 5 * 60_000,
     retry: 1,
   });
 }

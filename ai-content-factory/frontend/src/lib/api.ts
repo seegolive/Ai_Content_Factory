@@ -92,7 +92,9 @@ export const videosApi = {
       status: string;
       checkpoint?: string;
       progress_percent: number;
+      download_progress?: number;
       current_stage?: string;
+      eta_seconds?: number;
       error_message?: string;
     }>(`/videos/${id}/status`),
 
@@ -181,6 +183,8 @@ export const youtubeApi = {
       channel_id: string;
       channel_name?: string;
       subscriber_count?: number;
+      total_views?: number;
+      video_count?: number;
       thumbnail_url?: string;
       connected: boolean;
       error?: string;
