@@ -208,6 +208,8 @@ export default function ReviewPage() {
   const [videoDuration, setVideoDuration] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [reviewing, setReviewing] = useState(false);
+  const sortMenuRef = useRef<HTMLDivElement>(null);
   const [streamToken, setStreamToken] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
@@ -236,6 +238,23 @@ export default function ReviewPage() {
     }
   }, [reviewActiveClipId, sortedFilteredClips, setReviewActiveClip]);
 
+  // Reset title-edit state when active clip changes
+  useEffect(() => {
+    setEditingTitle(false);
+  }, [activeClip?.id]);
+
+  // Close sort dropdown on outside click
+  useEffect(() => {
+    if (!showSortMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (sortMenuRef.current && !sortMenuRef.current.contains(e.target as Node)) {
+        setShowSortMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showSortMenu]);
+
   const togglePlay = useCallback(() => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) { videoRef.current.play(); setIsPlaying(true); }
@@ -243,22 +262,25 @@ export default function ReviewPage() {
   }, []);
 
   const handleReview = useCallback(async (action: "approve" | "reject") => {
-    if (!activeClip) return;
+    if (!activeClip || reviewing) return;
+    setReviewing(true);
     try {
       await reviewClip({ clipId: activeClip.id, action });
       toast.success(action === "approve" ? "✓ Approved" : "✗ Rejected");
       const idx = sortedFilteredClips.findIndex((c) => c.id === activeClip.id);
       if (idx < sortedFilteredClips.length - 1) setReviewActiveClip(sortedFilteredClips[idx + 1].id);
     } catch { toast.error("Action failed"); }
-  }, [activeClip, reviewClip, sortedFilteredClips, setReviewActiveClip]);
+    finally { setReviewing(false); }
+  }, [activeClip, reviewing, reviewClip, sortedFilteredClips, setReviewActiveClip]);
 
   const handleApproveAndPublish = useCallback(async () => {
-    if (!activeClip) return;
+    if (!activeClip || reviewing) return;
+    setReviewing(true);
     try {
       await reviewClip({ clipId: activeClip.id, action: "approve" });
       router.push(`/publish/${activeClip.id}`);
-    } catch { toast.error("Approve failed"); }
-  }, [activeClip, reviewClip, router]);
+    } catch { toast.error("Approve failed"); setReviewing(false); }
+  }, [activeClip, reviewing, reviewClip, router]);
 
   const handlePublishApproved = useCallback(() => {
     if (!activeClip) return;
@@ -377,7 +399,7 @@ export default function ReviewPage() {
                 </button>
               )}
               {/* Sort dropdown */}
-              <div style={{ position: "relative" }}>
+              <div ref={sortMenuRef} style={{ position: "relative" }}>
                 <button
                   onClick={() => setShowSortMenu((v) => !v)}
                   style={{
@@ -400,7 +422,6 @@ export default function ReviewPage() {
                       borderRadius: 8, padding: 4, zIndex: 50,
                       boxShadow: "0 8px 32px rgba(0,0,0,0.4)", minWidth: 130,
                     }}
-                    onMouseLeave={() => setShowSortMenu(false)}
                   >
                     {(["viral_score", "duration", "moment_type"] as SortKey[]).map((key) => (
                       <button
@@ -653,43 +674,48 @@ export default function ReviewPage() {
             <div className="review-controls">
               {queueMode === "approved" ? (
                 <>
-                  <button
-                    onClick={handlePublishApproved}
-                    className="review-btn-publish"
-                  >
-                    <Upload size={13} />
-                    Publish Settings
-                  </button>
-                  <div className="review-shortcut-hint">
-                    <div className="review-shortcut-pair"><kbd>P</kbd> publish</div>
-                    <div className="review-shortcut-pair"><kbd>Space</kbd> play</div>
+                  <div className="review-controls-buttons">
+                    <button
+                      onClick={handlePublishApproved}
+                      className="review-btn-publish"
+                    >
+                      <Upload size={13} />
+                      Publish Settings
+                    </button>
                   </div>
-                  <div className="review-shortcut-hint">
-                    <div className="review-shortcut-pair"><kbd>J/K</kbd> nav</div>
+                  <div className="review-controls-shortcuts">
+                    <div className="review-shortcut-hint">
+                      <div className="review-shortcut-pair"><kbd>P</kbd> publish</div>
+                      <div className="review-shortcut-pair"><kbd>Space</kbd> play</div>
+                      <div className="review-shortcut-pair"><kbd>J/K</kbd> nav</div>
+                    </div>
                   </div>
                 </>
               ) : (
                 <>
-                  <button
-                    onClick={handleApproveAndPublish}
-                    className="review-btn-approve-publish"
-                  >
-                    <Upload size={13} />
-                    &amp; Publish
-                  </button>
-                  <button onClick={() => handleReview("approve")} className="review-btn-approve">
-                    <CheckCircle size={13} /> Approve
-                  </button>
-                  <button onClick={() => handleReview("reject")} className="review-btn-reject">
-                    <XCircle size={13} /> Reject
-                  </button>
-                  <div className="review-shortcut-hint">
-                    <div className="review-shortcut-pair"><kbd>A</kbd> approve</div>
-                    <div className="review-shortcut-pair"><kbd>P</kbd> approve+publish</div>
+                  <div className="review-controls-buttons">
+                    <button
+                      onClick={handleApproveAndPublish}
+                      className="review-btn-approve-publish"
+                      disabled={reviewing}
+                    >
+                      <Upload size={13} />
+                      &amp; Publish
+                    </button>
+                    <button onClick={() => handleReview("approve")} className="review-btn-approve" disabled={reviewing}>
+                      <CheckCircle size={13} /> Approve
+                    </button>
+                    <button onClick={() => handleReview("reject")} className="review-btn-reject" disabled={reviewing}>
+                      <XCircle size={13} /> Reject
+                    </button>
                   </div>
-                  <div className="review-shortcut-hint">
-                    <div className="review-shortcut-pair"><kbd>R</kbd> reject</div>
-                    <div className="review-shortcut-pair"><kbd>J/K</kbd> nav</div>
+                  <div className="review-controls-shortcuts">
+                    <div className="review-shortcut-hint">
+                      <div className="review-shortcut-pair"><kbd>A</kbd> approve</div>
+                      <div className="review-shortcut-pair"><kbd>P</kbd> approve+publish</div>
+                      <div className="review-shortcut-pair"><kbd>R</kbd> reject</div>
+                      <div className="review-shortcut-pair"><kbd>J/K</kbd> nav</div>
+                    </div>
                   </div>
                 </>
               )}
