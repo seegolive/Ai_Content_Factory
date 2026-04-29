@@ -189,12 +189,17 @@ GAMING EVENTS YANG WAJIB JADI CLIP (jangan pernah skip)
 FPS (Battlefield 6, Valorant):
 ✅ Kill streak / multikill / ace
 ✅ Clutch (1v2, 1v3, 1v4, 1v5)
-✅ Last second win/defuse
+✅ Last second win/defuse/decrypt
 ✅ Headshot impressive / no-scope / collateral
-✅ Vehicle/tank kill atau kena tank
+✅ Vehicle combat: tank duel, basoka/bazooka hit, heli meledak, airstrike kena musuh
 ✅ Squad wipe (menang atau kalah dramatis)
 ✅ Kena tembak dari arah tidak terduga
 ✅ Spawn kill (lucu atau kesal)
+✅ Near-death escape (tipis banget, hampir mati, cabut last second)
+✅ Finisher move (di bacok, di finisher, executions)
+✅ Cinematic moment yang streamer sendiri komentari ("cinema banget", "scene bagus", "epic moment")
+✅ Object/bomb plant + defuse tension (defend/attack mode)
+✅ Battle Royale: final squad, zone closing, last zone clutch, "chicken dinner"
 
 RPG (Kingdom Come Deliverance II):
 ✅ Boss fight defeat (terutama first attempt)
@@ -220,14 +225,27 @@ Universal (semua game):
 KATA-KATA KUNCI UNTUK DETEKSI MOMEN VIRAL
 ═══════════════════════════════════════════════════════
 
-Reaksi shock/kaget: "anjir", "anjay", "njir", "wuih", "buset", "gila", "edan", "wtf"
-Reaksi menang/berhasil: "yes!", "yesss!", "akhirnya!", "berhasil!", "mantap!", "gg", "ez"
-Reaksi kesal/rage: "kampret", "anjing", "tai", "bangsat", "kok bisa?!", "curang"
-Reaksi panik: "aduh", "mati gue", "habis gue", "bahaya!", "lari lari!", "kabur"
-Reaksi tidak percaya: "dari mana?!", "serius?!", "gak nyangka", "beneran?!"
+Reaksi shock/kaget: "anjir", "anjay", "njir", "wuih", "buset", "gila", "edan", "wtf", "cuh", "cuy", "cok", "gokil"
+Reaksi menang/berhasil: "yes!", "yesss!", "akhirnya!", "berhasil!", "mantap!", "gg", "ez", "nice", "gas gas gas", "let's go"
+Reaksi kesal/rage: "kampret", "anjing", "tai", "bangsat", "kok bisa?!", "curang", "brengsek", "kagak", "elah"
+Reaksi panik: "aduh", "mati gue", "habis gue", "bahaya!", "lari lari!", "kabur", "cabut cabut cabut", "reset reset"
+Reaksi tidak percaya: "dari mana?!", "serius?!", "gak nyangka", "beneran?!", "gimana bisa", "kok"
 Reaksi lucu: "wkwk", "wkwkwk", "hahaha", "kocak", "ngakak", "lucu banget"
 
+🔥 SELF-LABELING MOMEN (streamer sendiri menyebut momennya) — PRIORITAS TERTINGGI:
+"epic moment", "cinema banget", "cinematik", "scene nya bagus", "gila sih", "ini momen", "clip ini",
+"keren banget", "gila banget sih", "ini baru namanya", "sumpah gila", "ini tuh"
+
+🔫 BATTLEFIELD / FPS ACTION KEYWORDS — wajib detect:
+- Vehicle: "tank", "hancur", "meledak", "basoka", "bazooka", "peluru kendali", "helikopter", "heli meledak",
+           "naik tank", "tank gede", "battle tank", "airstrike", "air strike", "rudal", "rocket launcher"
+- Combat: "decrypt", "plant", "defuse", "bomb", "squad wipe", "finisher", "di bacok", "di finisher",
+          "clutch", "one hit", "headshot", "no scope", "kill streak", "multi kill"
+- Mode: "gauntlet", "battle royal", "battle royale", "second chance", "chicken dinner", "last squad",
+        "final ring", "zone", "looting"
+
 Intensitas: 1 exclamation = menarik | 2-3 dalam 10 detik = KEMUNGKINAN BESAR viral | 4+ rapid-fire = PASTI viral
+Streamer self-labels momen → langsung score 70+ (dia tahu momennya sendiri yang bagus)
 
 ═══════════════════════════════════════════════════════
 HASHTAG STRATEGY (10-15 tags, TANPA simbol #)
