@@ -511,10 +511,8 @@ input, textarea, select { font-family: inherit; }
 }
 
 .page-body {
-  padding: 24px 32px 48px;
-  max-width: 1440px;
+  padding: 20px 24px 48px;
   width: 100%;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -525,7 +523,7 @@ input, textarea, select { font-family: inherit; }
   min-width: 0;
 }
 @media (max-width: 640px) {
-  .page-body { padding: 16px 16px 40px; }
+  .page-body { padding: 14px 14px 40px; }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -3914,7 +3912,9 @@ kbd {
 }
 .publish-publish-btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
 .publish-publish-btn:active { transform: translateY(0); }
-.publish-publish-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; filter: none; }
+.publish-publish-btn:disabled { opacity: 0.7; cursor: not-allowed; transform: none; filter: none; }
+.publish-publish-btn.published { background: rgba(0,229,160,0.15); color: #00e5a0; border: 1px solid rgba(0,229,160,0.35); }
+.publish-publish-btn.published:disabled { opacity: 1; }
 .publish-reset-btn {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   width: 100%; padding: 10px 16px; border-radius: 10px;

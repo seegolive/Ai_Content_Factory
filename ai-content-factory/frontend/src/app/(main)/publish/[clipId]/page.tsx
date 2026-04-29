@@ -376,7 +376,7 @@ export default function PublishPage() {
               {savedOk ? "Saved!" : "Save Settings"}
             </button>
             <button
-              className="publish-publish-btn"
+              className={`publish-publish-btn${isPublished ? " published" : ""}`}
               onClick={handlePublish}
               disabled={isUploading || isPublished}
             >

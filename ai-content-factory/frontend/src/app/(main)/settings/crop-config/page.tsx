@@ -244,7 +244,7 @@ export default function CropConfigPage() {
       <>
         <Header breadcrumb={[{ label: "Settings" }, { label: "Vertical Crop" }]} />
         <div className="page-scroll">
-          <div className="page-body" style={{ maxWidth: 820, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300 }}>
+          <div className="page-body" style={{ maxWidth: 820, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300 }}>
             <div style={{ textAlign: "center", color: "var(--text-4)" }}>
               <RefreshCw size={24} style={{ animation: "spin 1s linear infinite", marginBottom: 12 }} />
               <p style={{ fontSize: 13, margin: 0 }}>Memuat konfigurasi...</p>
@@ -261,7 +261,7 @@ export default function CropConfigPage() {
       <>
         <Header breadcrumb={[{ label: "Settings" }, { label: "Vertical Crop" }]} />
         <div className="page-scroll">
-          <div className="page-body" style={{ maxWidth: 820 }}>
+          <div className="page-body" style={{ maxWidth: 820, margin: "0 auto" }}>
             <div style={{
               padding: "48px 32px", borderRadius: 16, border: "1px solid var(--border-1)",
               background: "var(--bg-2)", textAlign: "center",
@@ -296,7 +296,7 @@ export default function CropConfigPage() {
       <Header breadcrumb={[{ label: "Settings" }, { label: "Vertical Crop" }]} />
 
       <div className="page-scroll">
-        <div className="page-body" style={{ maxWidth: 820 }}>
+        <div className="page-body" style={{ maxWidth: 820, margin: "0 auto" }}>
 
           {/* Page header */}
           <div style={{ marginBottom: 28 }}>

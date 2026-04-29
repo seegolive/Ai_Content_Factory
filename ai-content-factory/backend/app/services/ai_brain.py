@@ -1,4 +1,4 @@
-"""AI Brain service — multi-model fallback (Groq → Gemini Flash → GPT-4o-mini)."""
+"""AI Brain service — multi-model fallback (Gemini Flash → Groq → GPT-4o-mini)."""
 
 import json
 import time
@@ -114,18 +114,18 @@ class AIAnalysisResult:
 def _build_provider_chain() -> list:
     return [
         {
-            "name": "Groq",
-            "base_url": settings.GROQ_BASE_URL,
-            "api_key": settings.GROQ_API_KEY,
-            "model": settings.GROQ_MODEL,
-            "supports_json_mode": True,
-        },
-        {
             "name": "OpenRouter Gemini Flash",
             "base_url": settings.OPENROUTER_BASE_URL,
             "api_key": settings.OPENROUTER_API_KEY,
             "model": settings.OPENROUTER_MODEL,
             "supports_json_mode": False,  # Gemini via OpenRouter tidak konsisten
+        },
+        {
+            "name": "Groq",
+            "base_url": settings.GROQ_BASE_URL,
+            "api_key": settings.GROQ_API_KEY,
+            "model": settings.GROQ_MODEL,
+            "supports_json_mode": True,
         },
         {
             "name": "OpenRouter GPT-4o-mini",
@@ -151,31 +151,36 @@ Viral scoring untuk gaming content (total 100 poin):
 - Relatability & shareability (0-20): "ini gue banget", "tag temen lo"
 
 ═══════════════════════════════════════════════════════
-ATURAN DURASI — LAYER 1 (DETECTION MODE)
+ATURAN DURASI — TARGET 60-180 DETIK PER CLIP
 ═══════════════════════════════════════════════════════
 
-Kamu sedang di mode DETEKSI, bukan mode filter.
-Tugas kamu adalah MENEMUKAN semua momen menarik.
-Kasih start_time dan end_time yang NATURAL sesuai momennya.
-Momen 25 detik? TETAP output. Pipeline layer berikutnya akan extend.
-Momen 5 menit? TETAP output. Pipeline layer berikutnya akan split.
-JANGAN manipulasi durasi. Kasih timestamp asli momen tersebut.
+Target platform: YouTube Shorts (minimum 60 detik, maksimum 180 detik).
+Setiap clip HARUS bisa berdiri sendiri sebagai Short yang utuh dan memuaskan.
 
-TIPS MENENTUKAN START & END:
-- start_time = saat situasi/tension MULAI terasa
-- end_time = saat reaksi streamer SELESAI (kalimat terakhir selesai)
-- Jangan paksa extend ke 60 detik jika momennya memang 30 detik natural
-- Pipeline layer berikutnya akan handle extend/trim/split
-- MINIMAL 15 detik per momen — momen viral tidak mungkin hanya 2-3 detik
-  (jika hanya 1 kalimat saja, extend ke konteks sekitarnya sampai ~15-30 detik)
+CARA MENENTUKAN DURASI YANG BENAR:
+Sebuah viral moment terdiri dari 3 bagian — SEMUANYA harus masuk:
+  1. BUILDUP (10-25 detik): konteks sebelum momen, tension, atau setup
+  2. PEAK (5-30 detik): momen inti yang viral (kill, reaksi, fail, dll)
+  3. AFTERMATH (10-25 detik): reaksi streamer setelah momen selesai
 
-ATURAN POTONG — JANGAN PERNAH DILANGGAR:
+Contoh benar:
+  - Momen kill streak hanya 8 detik → start 15 detik SEBELUMNYA (saat streamer mulai engage), end 20 detik SETELAHNYA (reaksi selesai) → total ~43 detik minimum
+  - Rage moment 5 detik → mulai saat situasi frustasi dimulai, akhiri saat streamer selesai bereaksi → total 60-90 detik
+
+TARGET DURASI PER MOMENT TYPE:
+- clutch/epic: 75-120 detik (butuh buildup tension yang cukup)
+- funny/rage/fail: 60-90 detik (reaksi + aftermath)
+- achievement: 90-150 detik (perjuangan + pencapaian + selebrasi)
+- tutorial: 90-180 detik (penjelasan harus lengkap)
+
+ATURAN KERAS:
+❌ DILARANG keras output clip < 45 detik — tidak akan pernah layak jadi Short
 ❌ Jangan potong di tengah kalimat streamer
 ❌ Jangan potong saat reaksi emosional belum selesai
-❌ Jangan potong saat aksi gameplay masih berlangsung
 ❌ Jangan mulai dari loading screen atau transisi
-✅ Mulai saat ada audio (suara gameplay atau streamer bicara)
-✅ Akhiri saat ada natural pause atau kalimat selesai
+✅ Mulai 10-25 detik SEBELUM momen inti (untuk buildup)
+✅ Akhiri 10-20 detik SETELAH momen inti (reaksi selesai + natural pause)
+✅ Jika durasi di bawah 60 detik, WAJIB tambah buildup dan aftermath lebih banyak
 
 ═══════════════════════════════════════════════════════
 GAMING EVENTS YANG WAJIB JADI CLIP (jangan pernah skip)
@@ -366,6 +371,12 @@ class AIBrainService:
 
         raise RuntimeError(f"All AI providers failed. Last error: {last_error}")
 
+    # ── Multi-pass windowed analysis constants ───────────────────────────────
+    _WINDOW_DURATION_S = 1800    # 30-min windows
+    _WINDOW_OVERLAP_S  = 300     # 5-min overlap between windows
+    _MULTIPASS_THRESHOLD_S = 2400  # videos > 40 min use multi-pass
+    _MAX_SEGMENTS_CHARS = 15_000   # per-window budget (safe for Groq)
+
     async def analyze_transcript(
         self,
         transcript: TranscriptResult,
@@ -373,15 +384,124 @@ class AIBrainService:
         game_title: str = "",
         channel_name: str = "",
     ) -> AIAnalysisResult:
-        """Analyze transcript and return viral clip suggestions."""
-        start = time.perf_counter()
+        """Analyze transcript and return viral clip suggestions.
 
-        # Build segments text — smart chunk sampling to preserve burst moments.
-        # 15k chars keeps HTTP payload <30KB, within Groq's request size limit.
-        MAX_SEGMENTS_CHARS = 15_000
-        segments_text = self._smart_sample_segments(
-            transcript.segments, MAX_SEGMENTS_CHARS
+        Short videos (≤40 min): single AI call.
+        Long videos (>40 min): multi-pass windowed — one AI call per 30-min window,
+        results merged and deduplicated. This ensures full transcript coverage
+        instead of sparse 12% sampling.
+        """
+        if transcript.duration <= self._MULTIPASS_THRESHOLD_S:
+            return await self._analyze_single_pass(
+                transcript.segments, transcript.duration, transcript.language,
+                transcript.word_count, channel_info, game_title, channel_name,
+            )
+
+        # Multi-pass for long videos
+        t0 = time.perf_counter()
+        windows = self._build_windows(transcript.segments, transcript.duration)
+        logger.info(
+            f"[AI] Multi-pass: {len(windows)} windows × 30min "
+            f"for {transcript.duration/60:.0f}min video"
         )
+
+        all_clips: List[ClipSuggestion] = []
+        total_tokens = 0
+        model_used = ""
+        provider_used = ""
+
+        for i, (window_segs, win_start, win_end) in enumerate(windows):
+            logger.info(
+                f"[AI] Window {i+1}/{len(windows)}: "
+                f"{win_start/60:.0f}–{win_end/60:.0f}min "
+                f"({len(window_segs)} segments)"
+            )
+            try:
+                result = await self._analyze_single_pass(
+                    window_segs,
+                    transcript.duration,
+                    transcript.language,
+                    transcript.word_count,
+                    channel_info,
+                    game_title,
+                    channel_name,
+                    window_label=f"[{win_start/60:.0f}–{win_end/60:.0f}min]",
+                )
+                all_clips.extend(result.clips)
+                total_tokens += result.tokens_used
+                if not model_used:
+                    model_used = result.model_used
+                    provider_used = result.provider_used
+            except Exception as e:
+                logger.warning(f"[AI] Window {i+1} failed: {e} — skipping")
+
+        # Deduplicate overlapping clips, sort by viral_score
+        all_clips = self._deduplicate_clips(all_clips)
+        all_clips.sort(key=lambda c: c.viral_score, reverse=True)
+
+        logger.info(
+            f"[AI] Multi-pass done: {len(all_clips)} unique clips "
+            f"from {len(windows)} windows ({total_tokens} tokens total)"
+        )
+
+        return AIAnalysisResult(
+            clips=all_clips,
+            processing_time=time.perf_counter() - t0,
+            model_used=model_used,
+            tokens_used=total_tokens,
+            provider_used=provider_used,
+        )
+
+    def _build_windows(
+        self, segments: list, total_duration: float
+    ) -> List[Tuple[list, float, float]]:
+        """Slice segments into overlapping 30-min windows."""
+        step = self._WINDOW_DURATION_S - self._WINDOW_OVERLAP_S  # 1500s
+        windows = []
+        start = 0.0
+        while start < total_duration:
+            end = min(start + self._WINDOW_DURATION_S, total_duration)
+            window_segs = [s for s in segments if start <= s.start < end]
+            if window_segs:
+                windows.append((window_segs, start, end))
+            start += step
+        return windows
+
+    def _deduplicate_clips(self, clips: List[ClipSuggestion]) -> List[ClipSuggestion]:
+        """Remove clips that overlap >50% with a higher-scored clip."""
+        clips_sorted = sorted(clips, key=lambda c: c.viral_score, reverse=True)
+        result: List[ClipSuggestion] = []
+        for clip in clips_sorted:
+            clip_dur = clip.end_time - clip.start_time
+            if clip_dur <= 0:
+                continue
+            duplicate = False
+            for existing in result:
+                overlap_start = max(clip.start_time, existing.start_time)
+                overlap_end = min(clip.end_time, existing.end_time)
+                if overlap_end > overlap_start:
+                    if (overlap_end - overlap_start) / clip_dur > 0.5:
+                        duplicate = True
+                        break
+            if not duplicate:
+                result.append(clip)
+        return result
+
+    async def _analyze_single_pass(
+        self,
+        segments: list,
+        total_duration: float,
+        language: str,
+        word_count: int,
+        channel_info: Optional[dict] = None,
+        game_title: str = "",
+        channel_name: str = "",
+        window_label: str = "",
+    ) -> AIAnalysisResult:
+        """Single AI call on a segment list (full video or one window)."""
+        t0 = time.perf_counter()
+
+        segments_text = self._smart_sample_segments(segments, self._MAX_SEGMENTS_CHARS)
 
         context_parts = []
         if game_title:
@@ -390,17 +510,17 @@ class AIBrainService:
             context_parts.append(f"Channel: {channel_name}")
         if channel_info:
             context_parts.append(f"Channel info: {json.dumps(channel_info)}")
-
         context_block = "\n".join(context_parts)
 
-        max_tokens = self._calc_max_tokens(transcript.duration)
+        window_note = f"Window: {window_label}\n" if window_label else ""
+        max_tokens = self._calc_max_tokens(total_duration)
 
         user_message = f"""Analisis transcript video gaming ini dan identifikasi momen-momen viral.
 
-Video duration: {transcript.duration:.1f} detik ({transcript.duration/60:.1f} menit)
-Language: {transcript.language}
-Word count: {transcript.word_count}
-{context_block}
+Video duration: {total_duration:.1f} detik ({total_duration/60:.1f} menit)
+Language: {language}
+Word count: {word_count}
+{window_note}{context_block}
 
 INGAT: Setiap clip MINIMUM 15 detik. Pilih range yang mencakup konteks sebelum dan sesudah momen utama.
 Jangan pilih hanya 1 kalimat — itu terlalu pendek. Minimal 3-5 kalimat per clip.
@@ -414,41 +534,27 @@ TRANSCRIPT:
             {"role": "user", "content": user_message},
         ]
 
-        (
-            content,
-            provider_name,
-            model_used,
-            tokens_used,
-        ) = await self._call_with_fallback(messages, max_tokens=max_tokens)
+        content, provider_name, model_used, tokens_used = \
+            await self._call_with_fallback(messages, max_tokens=max_tokens)
 
-        # If JSON is malformed, retry once with explicit instruction
         clips_data = self._try_parse_clips(content)
         if clips_data is None:
-            logger.warning(
-                "First parse failed, retrying with explicit JSON instruction"
-            )
+            logger.warning("First parse failed, retrying with explicit JSON instruction")
             messages.append({"role": "assistant", "content": content})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": "Output di atas bukan JSON valid. Coba lagi — output HANYA JSON valid, tidak ada teks lain.",
-                }
-            )
-            (
-                content,
-                provider_name,
-                model_used,
-                tokens_used,
-            ) = await self._call_with_fallback(messages, max_tokens=max_tokens)
+            messages.append({
+                "role": "user",
+                "content": "Output di atas bukan JSON valid. Coba lagi — output HANYA JSON valid, tidak ada teks lain.",
+            })
+            content, provider_name, model_used, tokens_used = \
+                await self._call_with_fallback(messages, max_tokens=max_tokens)
             clips_data = self._try_parse_clips(content)
 
-        elapsed = time.perf_counter() - start
         raw = clips_data or {}
         clips = self._parse_clip_suggestions(raw)
 
         return AIAnalysisResult(
             clips=clips,
-            processing_time=elapsed,
+            processing_time=time.perf_counter() - t0,
             model_used=model_used,
             tokens_used=tokens_used,
             provider_used=provider_name,
