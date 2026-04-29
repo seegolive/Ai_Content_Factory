@@ -385,6 +385,9 @@ Skills auto-load when relevant. Invoke explicitly with `/skill-name` or describe
 |-------|-------------|
 | `multi-stage-dockerfile` | Optimized multi-stage Dockerfiles |
 | `acquire-codebase-knowledge` | Generate 7 docs covering full codebase architecture |
+| `deploy` | GitHub Actions CI/CD, auto-deploy to VPS, rollback strategy |
+| `performance-profiling` | Profile Celery/FFmpeg/Whisper/DB bottlenecks, GPU utilization |
+| `rate-limiting` | Add slowapi rate limits to FastAPI endpoints (Gap #2) |
 
 ### Documentation & Git Workflow
 | Skill | Description |

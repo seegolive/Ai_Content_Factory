@@ -28,6 +28,13 @@ dev:
 	$(HEADER)
 	@docker compose up -d
 
+dev-build:
+	$(HEADER)
+	@echo -e "$(CYAN)Building frontend image with latest code...$(RESET)"
+	@docker compose build frontend
+	@docker compose up -d
+	@echo -e "$(GREEN)All services started with latest frontend.$(RESET)"
+
 down:
 	@docker compose down
 

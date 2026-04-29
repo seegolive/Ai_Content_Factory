@@ -1,6 +1,7 @@
 """Whisper-based local transcription service using faster-whisper."""
 
 import asyncio
+import os
 import threading
 from dataclasses import dataclass
 from functools import partial
@@ -73,61 +74,219 @@ class WhisperTranscriptionService:
             else:
                 raise
 
-    def _transcribe_sync(
+    # Split threshold: videos longer than one chunk get split before transcription
+    CHUNK_SECONDS = 1800  # 30 minutes per chunk → ~800MB RAM per chunk, safe for VAD
+
+    def _get_audio_duration(self, video_path: str) -> float:
+        """Quick probe of audio duration without loading into RAM."""
+        import json
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet", "-print_format", "json",
+                    "-show_format", video_path,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            data = json.loads(result.stdout)
+            return float(data["format"].get("duration", 0))
+        except Exception:
+            return 0.0
+
+    def _split_audio_chunks(
+        self, video_path: str, total_duration: float, tmp_dir: str
+    ) -> List[tuple]:
+        """
+        Split video audio into 30-min WAV chunks via FFmpeg.
+        Returns list of (chunk_path, time_offset_seconds).
+        Each chunk is 16kHz mono — exactly what Whisper wants.
+        """
+        import subprocess
+
+        chunks = []
+        start = 0.0
+        idx = 0
+        while start < total_duration:
+            chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.wav")
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(start),
+                "-t", str(self.CHUNK_SECONDS),
+                "-i", video_path,
+                "-ar", "16000",
+                "-ac", "1",
+                "-vn",
+                chunk_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=300)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"FFmpeg chunk split failed for chunk {idx}: "
+                    f"{result.stderr.decode()[:300]}"
+                )
+            chunks.append((chunk_path, start))
+            start += self.CHUNK_SECONDS
+            idx += 1
+        logger.info(f"Split audio into {len(chunks)} chunks of {self.CHUNK_SECONDS//60} min each")
+        return chunks
+
+    def _transcribe_chunk(
         self,
-        video_path: str,
+        chunk_path: str,
+        time_offset: float,
         language: Optional[str],
-        progress_callback: Optional[Callable[[int], None]] = None,
-    ) -> TranscriptResult:
-        """Run synchronous transcription (called in thread pool)."""
+        segment_id_start: int,
+    ) -> tuple:
+        """
+        Transcribe a single audio chunk with large-v3 + VAD (full quality).
+        Returns (segments, detected_language, chunk_duration).
+        All segment timestamps are adjusted by time_offset.
+        """
         model = WhisperTranscriptionService._model
         if model is None:
             raise RuntimeError("Whisper model not loaded")
 
         segments_iter, info = model.transcribe(
-            video_path,
+            chunk_path,
             language=language,
-            beam_size=5,
+            beam_size=1,
             word_timestamps=True,
             vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            chunk_length=30,
         )
 
         segments: List[TranscriptSegment] = []
         full_texts: List[str] = []
-        total_duration = float(info.duration) if info.duration else 0.0
-        last_reported_pct = -1
-
         for i, seg in enumerate(segments_iter):
             confidence = float(getattr(seg, "avg_logprob", 0.0))
             segments.append(
                 TranscriptSegment(
-                    id=i,
-                    start=float(seg.start),
-                    end=float(seg.end),
+                    id=segment_id_start + i,
+                    start=float(seg.start) + time_offset,
+                    end=float(seg.end) + time_offset,
                     text=seg.text.strip(),
                     confidence=confidence,
                 )
             )
             full_texts.append(seg.text.strip())
 
-            # Emit progress every 2% to avoid flooding DB
-            if progress_callback and total_duration > 0:
-                pct = int(float(seg.end) / total_duration * 100)
-                pct = min(pct, 99)  # never report 100 until fully done
-                if pct >= last_reported_pct + 2:
-                    last_reported_pct = pct
-                    try:
-                        progress_callback(pct)
-                    except Exception:
-                        pass  # non-critical
+        return segments, full_texts, info.language, float(info.duration)
 
-        full_text = " ".join(full_texts)
+    def _transcribe_sync(
+        self,
+        video_path: str,
+        language: Optional[str],
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> TranscriptResult:
+        """
+        Transcribe video using large-v3 (full quality) for ALL video lengths.
+        Videos longer than CHUNK_SECONDS are pre-split into 30-min WAV chunks
+        via FFmpeg — each chunk is small enough for VAD without OOM.
+        Chunks are processed sequentially, timestamps merged with correct offsets.
+        """
+        import tempfile
+        import shutil
 
+        total_duration = self._get_audio_duration(video_path)
+        use_chunked = total_duration > self.CHUNK_SECONDS
+
+        if use_chunked:
+            n_chunks = int(total_duration // self.CHUNK_SECONDS) + 1
+            logger.info(
+                f"Long video detected ({total_duration/3600:.1f}h). "
+                f"Splitting into {n_chunks} × {self.CHUNK_SECONDS//60}-min chunks "
+                f"for full-quality large-v3 transcription."
+            )
+
+        all_segments: List[TranscriptSegment] = []
+        all_texts: List[str] = []
+        detected_language = language
+        last_reported_pct = -1
+
+        tmp_dir = None
+        try:
+            if use_chunked:
+                tmp_dir = tempfile.mkdtemp(prefix="whisper_chunks_")
+                chunks = self._split_audio_chunks(video_path, total_duration, tmp_dir)
+
+                for chunk_idx, (chunk_path, time_offset) in enumerate(chunks):
+                    logger.info(
+                        f"Transcribing chunk {chunk_idx + 1}/{len(chunks)} "
+                        f"(offset={time_offset/60:.1f}min)"
+                    )
+                    segs, texts, lang, _ = self._transcribe_chunk(
+                        chunk_path,
+                        time_offset,
+                        language,
+                        segment_id_start=len(all_segments),
+                    )
+                    all_segments.extend(segs)
+                    all_texts.extend(texts)
+                    if detected_language is None:
+                        detected_language = lang
+
+                    # Progress based on chunks completed
+                    if progress_callback and total_duration > 0:
+                        pct = min(int((chunk_idx + 1) / len(chunks) * 99), 99)
+                        if pct >= last_reported_pct + 2:
+                            last_reported_pct = pct
+                            try:
+                                progress_callback(pct)
+                            except Exception:
+                                pass
+            else:
+                # Short video: single-pass, full quality, no temp files needed
+                model = WhisperTranscriptionService._model
+                if model is None:
+                    raise RuntimeError("Whisper model not loaded")
+
+                segments_iter, info = model.transcribe(
+                    video_path,
+                    language=language,
+                    beam_size=1,
+                    word_timestamps=True,
+                    vad_filter=True,
+                    vad_parameters={"min_silence_duration_ms": 500},
+                    chunk_length=30,
+                )
+                detected_language = info.language
+
+                for i, seg in enumerate(segments_iter):
+                    confidence = float(getattr(seg, "avg_logprob", 0.0))
+                    all_segments.append(
+                        TranscriptSegment(
+                            id=i,
+                            start=float(seg.start),
+                            end=float(seg.end),
+                            text=seg.text.strip(),
+                            confidence=confidence,
+                        )
+                    )
+                    all_texts.append(seg.text.strip())
+
+                    if progress_callback and total_duration > 0:
+                        pct = min(int(float(seg.end) / total_duration * 99), 99)
+                        if pct >= last_reported_pct + 2:
+                            last_reported_pct = pct
+                            try:
+                                progress_callback(pct)
+                            except Exception:
+                                pass
+
+        finally:
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                logger.info("Cleaned up temp chunk files")
+
+        full_text = " ".join(all_texts)
         return TranscriptResult(
             full_text=full_text,
-            segments=segments,
-            language=info.language,
-            duration=float(info.duration),
+            segments=all_segments,
+            language=detected_language or "id",
+            duration=total_duration,
             word_count=len(full_text.split()),
         )
 
