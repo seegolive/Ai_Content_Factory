@@ -121,7 +121,7 @@ services:
       - APP_ENV=${APP_ENV:-development}
       - PATH=/root/.deno/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/sbin:/bin
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q celery,pipeline,distribute,analytics
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q celery,pipeline,analytics
     depends_on:
       - postgres
       - redis
@@ -135,6 +135,35 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  celery_distribute:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+      - ./storage:/app/storage
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://postgres:password@postgres:5432/ai_content_factory}
+      - DATABASE_URL_SYNC=${DATABASE_URL_SYNC:-postgresql://postgres:password@postgres:5432/ai_content_factory}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      - SECRET_KEY=${SECRET_KEY:-changeme-min-32-chars-secret-key}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:3000/auth/callback}
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - APP_ENV=${APP_ENV:-development}
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q distribute -n distribute@%h
+    depends_on:
+      - postgres
+      - redis
+      - backend
+    networks:
+      - app_network
 
   celery_flower:
     image: mher/flower:2.0

@@ -105,6 +105,18 @@ def distribute_clip(
                                     )
                                     yt_account.access_token = access_token
                                 except Exception as e:
+                                    status_code = getattr(
+                                        getattr(e, "response", None), "status_code", None
+                                    )
+                                    if status_code == 400:
+                                        # invalid_grant — credentials changed or token revoked
+                                        # Clear the invalid refresh token so UI shows "needs re-auth"
+                                        yt_account.refresh_token = None
+                                        await db.commit()
+                                        raise RuntimeError(
+                                            "YouTube token expired or revoked. "
+                                            "Please re-connect your YouTube account in Settings."
+                                        ) from e
                                     logger.warning(f"Token refresh failed: {e}")
 
                             # Use publish_settings overrides if available

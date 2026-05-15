@@ -578,8 +578,12 @@ async def _stage_video_processing(video, db):
     from app.services.game_detector import GameDetector
     from app.services.facecam_detector import FacecamDetector
 
-    result = await db.execute(select(Clip).where(Clip.video_id == video.id))
+    result = await db.execute(
+        select(Clip).where(Clip.video_id == video.id, Clip.clip_path.is_(None))
+    )
     clips = result.scalars().all()
+    if not clips:
+        logger.info(f"[Pipeline] All clips already processed for video {video.id}, skipping cut stage")
 
     processor = VideoProcessorService()
     clips_dir = os.path.join("storage", "clips", str(video.id))
@@ -725,6 +729,9 @@ async def _stage_video_processing(video, db):
             clip.qc_issues = [
                 {"type": "processing_error", "description": str(e), "severity": "error"}
             ]
+
+        # Commit each clip immediately so progress is saved if pipeline crashes
+        await db.commit()
 
     video.checkpoint = "clips_done"
     await db.commit()
