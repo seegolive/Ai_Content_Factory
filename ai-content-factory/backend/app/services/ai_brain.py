@@ -162,7 +162,8 @@ Viral scoring untuk gaming content (total 100 poin):
 - Reaksi ekspresif streamer (0-30): teriak, exclamation, shock, tawa
 - Kelangkaan momen (0-25): clutch 1v4, first achievement, never-seen-before
 - Hook strength 5 detik pertama (0-25): langsung action atau tension tinggi
-- Relatability & shareability (0-20): "ini gue banget", "tag temen lo"
+- Relatability & shareability (0-15): "ini gue banget", "tag temen lo"
+- Trending relevance (0-5): mention nama pemain/event terkenal, topik yang sedang ramai
 
 ═══════════════════════════════════════════════════════
 ATURAN DURASI — TARGET 60-180 DETIK PER CLIP
@@ -185,13 +186,14 @@ TARGET DURASI PER MOMENT TYPE:
 - clutch/epic: 75-120 detik (butuh buildup tension yang cukup)
 - funny/rage/fail: 60-90 detik (reaksi + aftermath)
 - achievement: 90-150 detik (perjuangan + pencapaian + selebrasi)
-- tutorial: 90-180 detik (penjelasan harus lengkap)
+- tutorial: 60-90 detik (tips singkat dan padat — tutorial panjang tidak viral di Shorts)
 
 ATURAN KERAS:
 ❌ DILARANG keras output clip < 45 detik — tidak akan pernah layak jadi Short
 ❌ Jangan potong di tengah kalimat streamer
 ❌ Jangan potong saat reaksi emosional belum selesai
 ❌ Jangan mulai dari loading screen atau transisi
+❌ SKIP section yang mengindikasikan stream belum mulai: "waiting", "starting soon", "be right back", "brb", "sebentar lagi", "bentar ya", "loading", "stream belum mulai" — section ini biasanya VIDEO HITAM
 ✅ Mulai 10-25 detik SEBELUM momen inti (untuk buildup)
 ✅ Akhiri 10-20 detik SETELAH momen inti (reaksi selesai + natural pause)
 ✅ Jika durasi di bawah 60 detik, WAJIB tambah buildup dan aftermath lebih banyak
@@ -271,14 +273,19 @@ Reaksi lucu: "wkwk", "wkwkwk", "hahaha", "kocak", "ngakak", "lucu banget"
 Intensitas: 1 exclamation = menarik | 2-3 dalam 10 detik = KEMUNGKINAN BESAR viral | 4+ rapid-fire = PASTI viral
 Streamer self-labels momen → langsung score 70+ (dia tahu momennya sendiri yang bagus)
 
+🚫 SKIP OTOMATIS (jangan generate clip dari section ini):
+- Streamer bilang "waiting", "starting soon", "be right back", "brb", "bentar ya", "sebentar lagi"
+- Tidak ada percakapan atau reaksi selama 2+ menit (kemungkinan video hitam/break)
+- Loading screen / menu utama / lobby tanpa aksi
+
 ═══════════════════════════════════════════════════════
 HASHTAG STRATEGY (10-15 tags, TANPA simbol #)
 ═══════════════════════════════════════════════════════
 
-Lapisan 1 — Game specific (3-4): battlefield6, bf6, valorant, kcd2, arcraiders
-Lapisan 2 — Gaming Indonesia (3-4): gamingindonesia, streamerindonesia, gamingid
-Lapisan 3 — Moment specific: clutch→clutchmoment,epicmoment | funny→funnygaming,ngakak | rage→ragemoment | fail→gamingfail
-Lapisan 4 — General reach (2-3): shorts, youtubeshorts, viral, fyp
+Lapisan 1 — Game specific (3-4): battlefield6, bf6, valorant, kcd2, arcraiders, assassinscreed, acblackflag
+Lapisan 2 — Gaming Indonesia (3-4): gamingindonesia, streamerindonesia, gamingid, indogamer
+Lapisan 3 — Moment specific: clutch→clutchmoment,epicmoment | funny→funnygaming,ngakak | rage→ragemoment,gaming | fail→gamingfail,epicfail
+Lapisan 4 — General reach (2-3): shorts, youtubeshorts, viral, fyp, gaming
 
 ═══════════════════════════════════════════════════════
 GAYA JUDUL PER MOMENT TYPE
