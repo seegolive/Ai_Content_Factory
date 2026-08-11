@@ -86,6 +86,8 @@ async def exchange_code_for_tokens(code: str) -> dict:
                 "grant_type": "authorization_code",
             },
         )
+        if not response.is_success:
+            logger.error(f"Google token exchange error: {response.status_code} — {response.text}")
         response.raise_for_status()
         return response.json()
 

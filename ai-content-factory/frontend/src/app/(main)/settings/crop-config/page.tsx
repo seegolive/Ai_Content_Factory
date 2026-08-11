@@ -6,7 +6,7 @@ import { useVideos, useYoutubeStats } from "@/lib/queries";
 import api from "@/lib/api";
 import { toast } from "sonner";
 
-type CropMode = "blur_pillarbox" | "smart_offset" | "dual_zone" | "center_crop" | "blur_letterbox";
+type CropMode = "blur_pillarbox" | "smart_offset" | "dual_zone" | "center_crop" | "blur_letterbox" | "passthrough";
 type FacecamPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right" | "top_center_full" | "none";
 type CropAnchor = "left" | "center" | "right";
 
@@ -105,6 +105,18 @@ const CROP_MODE_INFO: Record<CropMode, {
       </div>
     ),
   },
+  passthrough: {
+    label: "Passthrough (Vertical)",
+    desc: "Untuk video yang sudah vertical (9:16) dari OBS. Tidak ada crop/blur — langsung potong dan encode. Canvas OBS harus diset ke 1080×1920.",
+    recommended: true,
+    illustration: (
+      <div style={{ width: 60, height: 80, margin: "0 auto", borderRadius: 4, overflow: "hidden", border: "2px solid rgba(0,212,170,0.6)", background: "rgba(0,212,170,0.12)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4 }}>
+        <div style={{ fontSize: 8, fontWeight: 800, color: "#00D4AA", letterSpacing: 1 }}>9:16</div>
+        <div style={{ fontSize: 7, color: "rgba(0,212,170,0.8)", fontWeight: 600 }}>NATIVE</div>
+        <div style={{ fontSize: 6, color: "rgba(0,212,170,0.6)" }}>no crop</div>
+      </div>
+    ),
+  },
 };
 
 export default function CropConfigPage() {
@@ -170,6 +182,8 @@ export default function CropConfigPage() {
           crop_x_offset: config.default_crop_x_offset,
           crop_anchor: config.default_crop_anchor,
           timestamp_seconds: 10,
+          obs_canvas_width: config.obs_canvas_width,
+          obs_canvas_height: config.obs_canvas_height,
         });
         setPreviewB64(res.data.preview_base64);
       } catch {
@@ -305,7 +319,7 @@ export default function CropConfigPage() {
               Vertical Crop Settings
             </h1>
             <p style={{ fontSize: 13, color: "var(--text-3)", margin: 0 }}>
-              Konfigurasi bagaimana video 16:9 (2560×1440) dikonversi ke 9:16 (1080×1920) untuk Shorts.
+              Konfigurasi bagaimana video dikonversi ke 9:16 (1080×1920) untuk Shorts. Untuk video yang sudah vertical, gunakan mode Passthrough.
             </p>
           </div>
 

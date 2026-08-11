@@ -61,6 +61,8 @@ class PreviewCropRequest(BaseModel):
     crop_x_offset: int = 0
     crop_anchor: str = "left"
     timestamp_seconds: float = 5.0
+    obs_canvas_width: int = 2560
+    obs_canvas_height: int = 1440
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -295,58 +297,88 @@ async def preview_crop(
         )
         await asyncio.wait_for(proc.communicate(), timeout=30)
 
-        # Apply crop filter to generate 9:16 preview
-        source_w = 2560  # default Seego GG
-        source_h = 1440
+        # Probe actual frame dimensions from the extracted frame
+        probe = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "csv=p=0",
+            frame_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        probe_out, _ = await asyncio.wait_for(probe.communicate(), timeout=10)
+        try:
+            probe_w, probe_h = [int(x) for x in probe_out.decode().strip().split(",")]
+        except Exception:
+            probe_w, probe_h = body.obs_canvas_width, body.obs_canvas_height
+
+        # Use actual frame dimensions for crop math; fall back to canvas config
+        source_w = probe_w
+        source_h = probe_h
         crop_h = source_h
-        crop_w = int(source_h * 9 / 16)  # 810
+        crop_w = int(source_h * 9 / 16)
 
         if body.vertical_crop_mode == "smart_offset":
             anchor = body.crop_anchor
             x_offset = body.crop_x_offset
-            x = (
-                max(0, x_offset)
-                if anchor == "left"
-                else max(0, source_w - crop_w - x_offset)
-            )
+            x = max(0, x_offset) if anchor == "left" else max(0, source_w - crop_w - x_offset)
+            x = min(x, source_w - crop_w)
             vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=270:480"
+            use_filter_complex = False
         elif body.vertical_crop_mode == "center_crop":
             x = (source_w - crop_w) // 2
             vf = f"crop={crop_w}:{crop_h}:{x}:0,scale=270:480"
+            use_filter_complex = False
         elif body.vertical_crop_mode == "blur_letterbox":
-            # Preview: blur bg + 200% zoom (540px wide) centered on 270x480 canvas
-            # Left/right overflow auto-cropped by canvas bounds, blur fills top/bottom
             vf = (
                 "split=2[bg][fg];"
                 "[bg]scale=270:480:force_original_aspect_ratio=increase,"
-                "crop=270:480,"
+                "crop=270:480:(ow-iw)/2:(oh-ih)/2,"
                 "boxblur=luma_radius=20:luma_power=3:chroma_radius=20:chroma_power=3,"
                 "colorchannelmixer=rr=0.82:gg=0.82:bb=0.82[blurred];"
                 "[fg]scale=540:-2[big];"
                 "[blurred][big]overlay=(W-w)/2:(H-h)/2"
             )
-        else:
-            # blur_pillarbox preview
+            use_filter_complex = False
+        elif body.vertical_crop_mode == "passthrough":
+            vf = "scale=270:480:force_original_aspect_ratio=decrease,pad=270:480:(ow-iw)/2:(oh-ih)/2:black"
+            use_filter_complex = False
+        elif body.vertical_crop_mode == "dual_zone":
+            # vstack: top 38% = facecam, bottom 62% = gameplay center crop
+            fc_zone_h = int(480 * 0.38)   # 182
+            gp_zone_h = 480 - fc_zone_h   # 298
+            fc_src_h = int(source_h * 0.38)
+            gp_src_h = source_h - fc_src_h
+            gp_crop_w = max(1, int(gp_src_h * 270 / gp_zone_h))
+            gp_x = max(0, min((source_w - gp_crop_w) // 2, source_w - gp_crop_w))
             vf = (
-                "split[o][c];[c]scale=270:480:force_original_aspect_ratio=increase,"
-                "crop=270:480,boxblur=20:3[b];[o]scale=270:-2[s];[b][s]overlay=(W-w)/2:(H-h)/2"
+                f"[0:v]crop={source_w}:{fc_src_h}:0:0,scale=270:{fc_zone_h}[fc];"
+                f"[0:v]crop={gp_crop_w}:{gp_src_h}:{gp_x}:{fc_src_h},scale=270:{gp_zone_h}[gp];"
+                "[fc][gp]vstack=inputs=2"
             )
+            use_filter_complex = True
+        else:
+            # blur_pillarbox: source centered, blurred sides fill 9:16 canvas
+            vf = (
+                "split[o][c];"
+                "[c]scale=270:480:force_original_aspect_ratio=increase,"
+                "crop=270:480:(ow-iw)/2:(oh-ih)/2,"
+                "boxblur=20:3[b];"
+                "[o]scale=270:-2[s];"
+                "[b][s]overlay=(W-w)/2:(H-h)/2"
+            )
+            use_filter_complex = False
 
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f2:
             preview_path = f2.name
 
+        if use_filter_complex:
+            cmd2 = ["ffmpeg", "-y", "-i", frame_path, "-filter_complex", vf,
+                    "-vframes", "1", "-q:v", "3", preview_path]
+        else:
+            cmd2 = ["ffmpeg", "-y", "-i", frame_path, "-vf", vf,
+                    "-vframes", "1", "-q:v", "3", preview_path]
+
         proc2 = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
-            "-i",
-            frame_path,
-            "-vf",
-            vf,
-            "-vframes",
-            "1",
-            "-q:v",
-            "3",
-            preview_path,
+            *cmd2,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

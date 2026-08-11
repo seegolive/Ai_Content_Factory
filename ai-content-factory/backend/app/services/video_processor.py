@@ -478,11 +478,22 @@ class VideoProcessorService:
             or "blur_pillarbox"
         )
 
+        # Auto-detect: if source is already portrait, skip conversion entirely.
+        if source_h > source_w and mode != "passthrough":
+            logger.info(
+                f"[VideoProcessor] source is already vertical ({source_w}x{source_h}), forcing passthrough"
+            )
+            mode = "passthrough"
+
         logger.info(
             f"[VideoProcessor] resize_to_vertical mode={mode} src={source_w}x{source_h}"
             + (f" [{start_time:.1f}s–{end_time:.1f}s]" if start_time is not None else "")
         )
-        if mode == "smart_offset":
+        if mode == "passthrough":
+            return await self._crop_passthrough(
+                input_path, output_path, start_time, end_time
+            )
+        elif mode == "smart_offset":
             return await self._crop_smart_offset(
                 input_path, output_path, game_profile, source_w, source_h, start_time, end_time
             )
@@ -502,6 +513,38 @@ class VideoProcessorService:
             return await self._crop_blur_pillarbox(
                 input_path, output_path, source_w, source_h, start_time, end_time
             )
+
+    async def _crop_passthrough(
+        self,
+        input_path: str,
+        output_path: str,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> str:
+        """Re-encode already-vertical source to 1080x1920, no crop/blur."""
+        encoder = get_encoder()
+        params = {"cq": "18", "crf": "18", "preset": "medium", "bitrate": "8M"}
+        vf = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
+        seek = _seek_args(start_time, end_time)
+        cmd = (
+            ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
+            + build_video_encode_flags(encoder, params)
+            + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+        )
+        try:
+            await self._run_ffmpeg(cmd)
+        except VideoProcessingError as e:
+            if encoder in ("av1_nvenc", "h264_nvenc"):
+                logger.warning(f"NVENC passthrough failed, falling back to CPU: {e}")
+                cmd_cpu = (
+                    ["ffmpeg", "-y"] + seek + ["-i", input_path, "-vf", vf]
+                    + build_cpu_encode_flags(params)
+                    + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+                )
+                await self._run_ffmpeg(cmd_cpu)
+            else:
+                raise
+        return output_path
 
     async def _crop_center(
         self,

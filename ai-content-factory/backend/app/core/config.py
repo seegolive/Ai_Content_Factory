@@ -48,12 +48,17 @@ class Settings(BaseSettings):
     # YouTube
     YOUTUBE_API_KEY: str = ""
 
-    # Groq (primary AI — free, fastest)
+    # Ollama (primary AI — local, free, no rate limit)
+    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434/v1"
+    OLLAMA_MODEL: str = "qwen3:32b"
+    OLLAMA_FAST_MODEL: str = "qwen2.5:7b"
+
+    # Groq (fallback 1 — free cloud)
     GROQ_API_KEY: str = ""
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
-    # OpenRouter (fallback 1 & 2)
+    # OpenRouter (fallback 2 & 3)
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "google/gemini-2.0-flash-001"
@@ -88,6 +93,8 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     FRONTEND_URL: str = "http://localhost:3000"
+    # Comma-separated extra origins (e.g. LAN IP for access from other devices)
+    EXTRA_ORIGINS: str = ""
     MAX_VIDEO_SIZE_GB: float = 10.0
     MAX_VIDEO_DURATION_HOURS: float = 3.0
 

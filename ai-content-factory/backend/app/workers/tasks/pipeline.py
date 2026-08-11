@@ -564,7 +564,43 @@ def _try_extend_clip(clip, rule: dict, video_duration: float):
 
 
 async def _stage_qc_filtering(video, db):
-    """QC is run per-clip after video processing; mark checkpoint here."""
+    """Pre-cut QC: reject clips whose source frame is too dark (black screen / waiting screen)."""
+    import asyncio
+    from sqlalchemy import select
+    from app.models.clip import Clip
+
+    result = await db.execute(
+        select(Clip).where(Clip.video_id == video.id, Clip.clip_path.is_(None))
+    )
+    clips = result.scalars().all()
+
+    rejected = 0
+    if video.file_path and clips:
+        for clip in clips:
+            try:
+                # Sample one frame at clip midpoint and measure mean brightness (0–255)
+                midpoint = clip.start_time + (clip.end_time - clip.start_time) / 2
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-ss", str(midpoint), "-i", video.file_path,
+                    "-vframes", "1", "-vf", "scale=32:18,format=gray",
+                    "-f", "rawvideo", "pipe:",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+                if stdout:
+                    brightness = sum(stdout) / len(stdout)
+                    if brightness < 20:  # < 20/255 = mostly black
+                        clip.qc_status = "failed"
+                        clip.qc_issues = [{"type": "black_frame", "severity": "error",
+                                           "description": f"Source frame at {midpoint:.0f}s is black (brightness={brightness:.1f})"}]
+                        rejected += 1
+                        logger.debug(f"[QC] Rejected black clip {clip.id} at {midpoint:.0f}s (brightness={brightness:.1f})")
+            except Exception as e:
+                logger.warning(f"[QC] Brightness check failed for clip {clip.id}: {e}")
+
+    if rejected:
+        logger.info(f"[QC] Pre-cut blackframe filter: rejected {rejected}/{len(clips)} clips")
+
     video.checkpoint = "qc_done"
     await db.commit()
 
@@ -579,7 +615,11 @@ async def _stage_video_processing(video, db):
     from app.services.facecam_detector import FacecamDetector
 
     result = await db.execute(
-        select(Clip).where(Clip.video_id == video.id, Clip.clip_path.is_(None))
+        select(Clip).where(
+            Clip.video_id == video.id,
+            Clip.clip_path.is_(None),
+            Clip.qc_status != "failed",  # skip pre-rejected black frames
+        )
     )
     clips = result.scalars().all()
     if not clips:

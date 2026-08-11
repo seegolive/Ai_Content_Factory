@@ -1,4 +1,4 @@
-"""AI Brain service — multi-model fallback (Gemini Flash → Groq → GPT-4o-mini)."""
+"""AI Brain service — multi-model fallback (Ollama qwen3:32b → qwen2.5:7b → Gemini Flash → GPT-4o-mini)."""
 
 import json
 import time
@@ -114,11 +114,25 @@ class AIAnalysisResult:
 def _build_provider_chain() -> list:
     return [
         {
+            "name": "Ollama qwen3:32b",
+            "base_url": settings.OLLAMA_BASE_URL,
+            "api_key": "ollama",  # local — any non-empty string works
+            "model": settings.OLLAMA_MODEL,
+            "supports_json_mode": True,
+        },
+        {
+            "name": "Ollama qwen2.5:7b",
+            "base_url": settings.OLLAMA_BASE_URL,
+            "api_key": "ollama",
+            "model": settings.OLLAMA_FAST_MODEL,
+            "supports_json_mode": True,
+        },
+        {
             "name": "OpenRouter Gemini Flash",
             "base_url": settings.OPENROUTER_BASE_URL,
             "api_key": settings.OPENROUTER_API_KEY,
             "model": settings.OPENROUTER_MODEL,
-            "supports_json_mode": False,  # Gemini via OpenRouter tidak konsisten
+            "supports_json_mode": False,
         },
         {
             "name": "Groq",
@@ -201,12 +215,16 @@ FPS (Battlefield 6, Valorant):
 ✅ Object/bomb plant + defuse tension (defend/attack mode)
 ✅ Battle Royale: final squad, zone closing, last zone clutch, "chicken dinner"
 
-RPG (Kingdom Come Deliverance II):
-✅ Boss fight defeat (terutama first attempt)
-✅ Quest completion setelah struggle
-✅ Dialog NPC yang aneh/lucu
-✅ Combat yang tidak terduga
-✅ Lockpick/steal yang menegangkan
+RPG (Kingdom Come Deliverance II, Assassin's Creed, RPG lain):
+✅ Boss fight atau duel satu lawan satu yang intens
+✅ Misi/quest completion setelah struggle panjang
+✅ Parkour/climbing/stealth yang berhasil atau gagal lucu
+✅ Cutscene atau dialog NPC yang dramatis/mengejutkan
+✅ Combat combo yang keren atau death yang tidak terduga
+✅ Eksplorasi area/dunia baru pertama kali ("pertama kali masuk", "gila ini areanya")
+✅ Upgrade/unlock skill/item epic
+✅ Streamer nyasar atau salah jalan tapi lucu
+✅ Assassin's Creed spesifik: parkour gagal, eagle dive, hidden blade assassination, naval combat, ship battle, synchronize viewpoint
 
 Survival (Arc Raiders):
 ✅ First encounter enemy baru
@@ -236,7 +254,13 @@ Reaksi lucu: "wkwk", "wkwkwk", "hahaha", "kocak", "ngakak", "lucu banget"
 "epic moment", "cinema banget", "cinematik", "scene nya bagus", "gila sih", "ini momen", "clip ini",
 "keren banget", "gila banget sih", "ini baru namanya", "sumpah gila", "ini tuh"
 
-🔫 BATTLEFIELD / FPS ACTION KEYWORDS — wajib detect:
+�️ RPG / ADVENTURE / ASSASSIN'S CREED KEYWORDS — wajib detect:
+- AC Black Flag: "kapal", "berlayar", "bajak laut", "naval", "harpooning", "paus", "assassin", "templar",
+                 "parkour", "hidden blade", "eagle", "viewpoint", "kingston", "nassau", "kenway",
+                 "laut", "meriam", "duel", "stealth kill", "silent kill"
+- RPG umum: "boss", "level up", "quest", "misi", "skill", "item langka", "rare", "unlock",
+            "nyasar", "dungeon", "npc", "dialog", "cutscene", "upgrade", "crafting"
+- Eksplorasi: "area baru", "pertama kali", "world baru", "tempat baru", "gila ini"
 - Vehicle: "tank", "hancur", "meledak", "basoka", "bazooka", "peluru kendali", "helikopter", "heli meledak",
            "naik tank", "tank gede", "battle tank", "airstrike", "air strike", "rudal", "rocket launcher"
 - Combat: "decrypt", "plant", "defuse", "bomb", "squad wipe", "finisher", "di bacok", "di finisher",
@@ -313,6 +337,8 @@ class AIBrainService:
         max_tokens: int,
     ) -> dict:
         """Call a single provider. Raises on any error."""
+        # Ollama local needs more time for large models; cloud providers are faster
+        timeout = 300.0 if provider["base_url"].startswith("http://host.docker") else 120.0
         async with httpx.AsyncClient(
             base_url=provider["base_url"],
             headers={
@@ -320,7 +346,7 @@ class AIBrainService:
                 "HTTP-Referer": "https://ai-content-factory.app",
                 "X-Title": "AI Content Factory",
             },
-            timeout=120.0,
+            timeout=timeout,
         ) as client:
             payload: dict = {
                 "model": provider["model"],
@@ -393,7 +419,8 @@ class AIBrainService:
     _WINDOW_DURATION_S = 1800    # 30-min windows
     _WINDOW_OVERLAP_S  = 300     # 5-min overlap between windows
     _MULTIPASS_THRESHOLD_S = 2400  # videos > 40 min use multi-pass
-    _MAX_SEGMENTS_CHARS = 15_000   # per-window budget (safe for Groq)
+    # 50k chars: safe for Ollama (no limit) and OpenRouter; Groq 413 handled by fallback chain
+    _MAX_SEGMENTS_CHARS = 50_000
 
     async def analyze_transcript(
         self,
