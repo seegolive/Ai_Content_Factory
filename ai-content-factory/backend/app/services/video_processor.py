@@ -865,6 +865,7 @@ class VideoProcessorService:
         output_path: str,
         segments: list,
         clip_start: float = 0.0,
+        clip_end: float = float("inf"),
         hook_duration: float = 0.0,
         peak_time: Optional[float] = None,
     ) -> str:
@@ -887,19 +888,36 @@ class VideoProcessorService:
             "Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, "
             "Encoding\n"
             "Style: Default,Montserrat,52,&H00FFFFFF,&H000000FF,&H00000000,&H88000000,"
-            "1,0,0,0,100,100,0,0,3,3,0,2,20,20,350,1\n\n"
+            "1,0,0,0,100,100,0,0,3,3,0,2,20,20,350,1\n"
+            # Rewind marker: smaller, centered, shown briefly at hook→build transition
+            "Style: Rewind,Montserrat,40,&H00FFFFFF,&H000000FF,&H00000000,&HCC000000,"
+            "1,0,0,0,100,100,0,0,3,2,0,5,40,40,960,1\n\n"
             "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         )
         ass_events = []
+
+        # Add "X DETIK SEBELUMNYA" rewind marker at hook→build transition
+        if peak_time is not None and hook_duration > 0:
+            rewind_sec = int(peak_time - clip_start)
+            rewind_text = f"{rewind_sec} DETIK SEBELUMNYA..."
+            # Show for 1.5s starting at hook_duration
+            ass_events.append(
+                f"Dialogue: 1,{_fmt_ass(hook_duration)},{_fmt_ass(hook_duration + 1.5)},"
+                f"Rewind,,0,0,0,,{rewind_text}"
+            )
+
         for seg in segments:
             src_start = seg.get("start", 0.0)
             src_end = seg.get("end", src_start + 1.0)
             text = seg.get("text", "").strip()
             if not text:
                 continue
-            out_start = _remap_timestamp(src_start, clip_start, peak_time, hook_duration)
-            out_end = _remap_timestamp(src_end, clip_start, peak_time, hook_duration)
-            if out_start is None or out_end is None or out_start >= out_end:
+            # Skip segments outside clip range
+            if src_end < clip_start or src_start > clip_end:
+                continue
+            out_start = _remap_timestamp(src_start, clip_start, peak_time, hook_duration, clip_end)
+            out_end = _remap_timestamp(src_end, clip_start, peak_time, hook_duration, clip_end)
+            if out_start is None or out_end is None or out_start >= out_end or out_start < 0:
                 continue
             wrapped = _wrap_caption(text).replace("\n", "\\N")
             ass_events.append(
@@ -985,6 +1003,7 @@ def _remap_timestamp(
     clip_start: float,
     peak_time: Optional[float],
     hook_dur: float,
+    clip_end: float = float("inf"),
 ) -> Optional[float]:
     """Map source video timestamp to hook-first output timestamp.
 
@@ -994,18 +1013,20 @@ def _remap_timestamp(
       source[clip_start → peak]    → output[hook_dur → hook_dur+build]
       source[peak → clip_end]      → output[hook_dur+build → end]
     """
+    if src_t < clip_start or src_t > clip_end:
+        return None
     if peak_time is None or hook_dur == 0:
         return src_t - clip_start
 
     build_dur = peak_time - clip_start
     # Hook segment: peak_time → peak_time + hook_dur
-    if peak_time <= src_t <= peak_time + hook_dur:
+    if peak_time <= src_t <= min(peak_time + hook_dur, clip_end):
         return src_t - peak_time
     # Build segment: clip_start → peak_time
     if clip_start <= src_t < peak_time:
         return hook_dur + (src_t - clip_start)
-    # Payoff segment: peak_time → end
-    if src_t >= peak_time:
+    # Payoff segment: peak_time → clip_end
+    if src_t > peak_time:
         return hook_dur + build_dur + (src_t - peak_time)
     return None
 

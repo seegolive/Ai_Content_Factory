@@ -863,17 +863,18 @@ async def _stage_video_processing(video, db):
             cap_path = os.path.join(clips_dir, f"{clip.id}_captioned.mp4")
             hook_dur = 4.0 if (clip.peak_time and (clip.peak_time - clip.start_time) >= 8) else 0.0
             try:
-                # Load transcript segments from stored video data
-                from app.services.transcription import TranscriptSegment as _TS
+                # Only include segments within the clip's time range (+ small buffer)
                 cap_segments = [
                     {"start": s["start"], "end": s["end"], "text": s.get("text", "")}
                     for s in (video.transcript_segments or [])
+                    if clip.start_time - 2 <= s["start"] <= clip.end_time + 2
                 ]
                 captioned = await processor.burn_captions(
                     input_path=vertical_path,
                     output_path=cap_path,
                     segments=cap_segments,
                     clip_start=clip.start_time,
+                    clip_end=clip.end_time,
                     hook_duration=hook_dur,
                     peak_time=clip.peak_time if hook_dur > 0 else None,
                 )
