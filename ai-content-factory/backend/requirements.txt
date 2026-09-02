@@ -34,7 +34,7 @@ google-api-python-client==2.154.0
 
 # Video Processing (ffmpeg-python is optional; we call ffmpeg via subprocess)
 ffmpeg-python==0.2.0
-yt-dlp>=2026.3.17
+yt-dlp>=2026.8.19
 
 # Notification
 python-telegram-bot==21.9

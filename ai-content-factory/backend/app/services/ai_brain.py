@@ -194,7 +194,9 @@ ATURAN KERAS:
 ❌ Jangan potong saat reaksi emosional belum selesai
 ❌ Jangan mulai dari loading screen atau transisi
 ❌ SKIP section yang mengindikasikan stream belum mulai: "waiting", "starting soon", "be right back", "brb", "sebentar lagi", "bentar ya", "loading", "stream belum mulai" — section ini biasanya VIDEO HITAM
-✅ Mulai 10-25 detik SEBELUM momen inti (untuk buildup)
+❌ JANGAN mulai clip di timestamp PEAK/puncak — itu sudah di tengah momen, penonton masuk tiba-tiba
+✅ Mulai 15-30 detik SEBELUM momen inti — saat suasana BARU MULAI memanas, bukan saat sudah panas
+✅ Cari kata/kalimat di transcript yang menandai AWAL tension: "nah ini...", "waduh...", "siap...", "ayo...", "eh ada", dll
 ✅ Akhiri 10-20 detik SETELAH momen inti (reaksi selesai + natural pause)
 ✅ Jika durasi di bawah 60 detik, WAJIB tambah buildup dan aftermath lebih banyak
 
@@ -411,7 +413,8 @@ class AIBrainService:
                 # 413 = payload too large → try next (other provider may have higher limit)
                 # 429 = rate limit → try next
                 # 5xx = server errors → try next
-                SKIP_TO_NEXT = {401, 403, 413, 429, 500, 502, 503, 504}
+                # 404 = endpoint/model not found → try next (e.g. Ollama model not installed)
+                SKIP_TO_NEXT = {401, 403, 404, 413, 429, 500, 502, 503, 504}
                 if status not in SKIP_TO_NEXT:
                     break
             except (httpx.TimeoutException, httpx.ConnectError) as e:
@@ -435,6 +438,7 @@ class AIBrainService:
         channel_info: Optional[dict] = None,
         game_title: str = "",
         channel_name: str = "",
+        hype_markers: Optional[list] = None,
     ) -> AIAnalysisResult:
         """Analyze transcript and return viral clip suggestions.
 
@@ -447,6 +451,7 @@ class AIBrainService:
             return await self._analyze_single_pass(
                 transcript.segments, transcript.duration, transcript.language,
                 transcript.word_count, channel_info, game_title, channel_name,
+                hype_markers=hype_markers,
             )
 
         # Multi-pass for long videos
@@ -478,6 +483,9 @@ class AIBrainService:
                     game_title,
                     channel_name,
                     window_label=f"[{win_start/60:.0f}–{win_end/60:.0f}min]",
+                    hype_markers=hype_markers,
+                    window_start=win_start,
+                    window_end=win_end,
                 )
                 all_clips.extend(result.clips)
                 total_tokens += result.tokens_used
@@ -549,6 +557,9 @@ class AIBrainService:
         game_title: str = "",
         channel_name: str = "",
         window_label: str = "",
+        hype_markers: Optional[list] = None,
+        window_start: float = 0,
+        window_end: float = float("inf"),
     ) -> AIAnalysisResult:
         """Single AI call on a segment list (full video or one window)."""
         t0 = time.perf_counter()
@@ -565,6 +576,31 @@ class AIBrainService:
         context_block = "\n".join(context_parts)
 
         window_note = f"Window: {window_label}\n" if window_label else ""
+
+        # Build audio hype markers block for this window
+        hype_block = ""
+        if hype_markers:
+            window_peaks = [
+                m for m in hype_markers
+                if m["start"] < window_end and m["end"] > window_start
+            ]
+            if window_peaks:
+                # Show markers with their pre-buffer start so AI knows to include build-up
+                timestamps = " ".join(
+                    f"[PEAK {int(m['start'])//60:02d}:{int(m['start'])%60:02d}]"
+                    for m in window_peaks
+                )
+                hype_block = (
+                    f"\nAUDIO_HYPE_MOMENTS — Deteksi otomatis dari audio intensitas tinggi:\n"
+                    f"{timestamps}\n"
+                    f"\n⚠️ ATURAN PEMOTONGAN UNTUK HYPE MOMENTS:\n"
+                    f"- JANGAN mulai clip tepat di timestamp PEAK — itu sudah di tengah aksi.\n"
+                    f"- Mulai clip 15–30 detik SEBELUM timestamp PEAK untuk menangkap build-up:\n"
+                    f"  contoh: PEAK 05:30 → start_time = 05:00 atau 05:10 (bukan 05:30)\n"
+                    f"- Clip harus dimulai saat suasana BARU mulai memanas, bukan saat sudah puncak.\n"
+                    f"- Cari di transcript kalimat/momen yang 'memulai' ketegangan sebelum PEAK.\n"
+                )
+                logger.info(f"[AI] Injecting {len(window_peaks)} hype markers into prompt")
         max_tokens = self._calc_max_tokens(total_duration)
 
         user_message = f"""Analisis transcript video gaming ini dan identifikasi momen-momen viral.
@@ -572,8 +608,7 @@ class AIBrainService:
 Video duration: {total_duration:.1f} detik ({total_duration/60:.1f} menit)
 Language: {language}
 Word count: {word_count}
-{window_note}{context_block}
-
+{window_note}{context_block}{hype_block}
 INGAT: Setiap clip MINIMUM 15 detik. Pilih range yang mencakup konteks sebelum dan sesudah momen utama.
 Jangan pilih hanya 1 kalimat — itu terlalu pendek. Minimal 3-5 kalimat per clip.
 

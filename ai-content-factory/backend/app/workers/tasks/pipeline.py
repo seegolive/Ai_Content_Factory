@@ -9,7 +9,10 @@ On retry, completed stages are skipped — idempotent execution.
 """
 
 import asyncio
+import json
 import os
+import statistics
+import subprocess
 import uuid
 from typing import Optional
 
@@ -187,8 +190,80 @@ def process_video_pipeline(self, video_id: str):
 # ── Stage implementations ────────────────────────────────────────────────────
 
 
+async def _extract_audio_energy_peaks(file_path: str, video_id: str) -> list:
+    """Extract audio hype moments via FFmpeg ebur128 loudness analysis.
+    Returns list of {start, end, level} dicts for windows above the energy threshold.
+    """
+    energy_file = os.path.join("storage", "videos", f"{video_id}_energy.json")
+    if os.path.exists(energy_file):
+        with open(energy_file) as f:
+            return json.load(f)
+
+    def _run():
+        result = subprocess.run(
+            ["ffmpeg", "-i", file_path, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=600,
+        )
+        return result.stderr
+
+    loop = asyncio.get_event_loop()
+    stderr = await loop.run_in_executor(None, _run)
+
+    # Parse: "t:  3.2 M: -18.5 S: ..." → (time_s, momentary_lufs)
+    momentary: list[tuple[float, float]] = []
+    for line in stderr.splitlines():
+        if "M:" in line and "t:" in line:
+            try:
+                t_val = float(line.split("t:")[1].split()[0])
+                m_val = float(line.split("M:")[1].split()[0])
+                if m_val > -70:  # skip silence frames
+                    momentary.append((t_val, m_val))
+            except (ValueError, IndexError):
+                continue
+
+    if len(momentary) < 10:
+        logger.warning("[Pipeline] Audio energy: not enough data, skipping")
+        return []
+
+    # Aggregate to 5-second windows
+    window_sec = 5
+    windows: dict[int, list[float]] = {}
+    for t, m in momentary:
+        bucket = int(t // window_sec)
+        windows.setdefault(bucket, []).append(m)
+
+    window_avgs = sorted(
+        [(bucket * window_sec, sum(v) / len(v)) for bucket, v in windows.items()]
+    )
+    loudness_vals = [lv for _, lv in window_avgs]
+    mean_l = statistics.mean(loudness_vals)
+    std_l = statistics.stdev(loudness_vals) if len(loudness_vals) > 1 else 1.0
+    # 0.7 std catches top ~24% of windows — aggressive enough for gaming
+    threshold = mean_l + 0.7 * std_l
+
+    peaks = [
+        {"start": int(t), "end": int(t + window_sec), "level": round(lv, 1)}
+        for t, lv in window_avgs
+        if lv > threshold
+    ]
+
+    # Merge consecutive / overlapping peaks into longer hype segments
+    merged: list[dict] = []
+    for p in peaks:
+        if merged and p["start"] <= merged[-1]["end"] + window_sec:
+            merged[-1]["end"] = p["end"]
+            merged[-1]["level"] = max(merged[-1]["level"], p["level"])
+        else:
+            merged.append(dict(p))
+
+    with open(energy_file, "w") as f:
+        json.dump(merged, f)
+
+    logger.info(f"[Pipeline] Audio energy: {len(merged)} hype segments detected")
+    return merged
+
+
 async def _stage_input_validation(video, db):
-    from app.services.copyright_check import CopyrightCheckService
 
     # ── Download YouTube URL if no local file ────────────────────────────────
     if not video.file_path and video.original_url:
@@ -201,6 +276,7 @@ async def _stage_input_validation(video, db):
 
     # Copyright pre-check
     if video.file_path:
+        from app.services.copyright_check import CopyrightCheckService
         checker = CopyrightCheckService()
         result = await checker.check_audio(video.file_path)
         video.copyright_status = result.status
@@ -208,6 +284,13 @@ async def _stage_input_validation(video, db):
             logger.warning(
                 f"[Pipeline] Copyright flag on {video.id}: {result.matched_music}"
             )
+
+    # Extract audio energy peaks (non-blocking, best-effort)
+    if video.file_path:
+        try:
+            await _extract_audio_energy_peaks(video.file_path, str(video.id))
+        except Exception as e:
+            logger.warning(f"[Pipeline] Audio energy extraction failed (non-fatal): {e}")
 
     video.checkpoint = "input_validated"
     await db.commit()
@@ -261,9 +344,8 @@ async def _download_youtube_video(video, db):
                 except Exception:
                     pass  # Non-critical — progress display only
 
-    # Use android_vr player client: provides 1080p/1440p/4K without JS challenge solving.
-    # The web/ios clients require EJS challenge solver or PO Token (often unavailable in Docker).
-    # android_vr bypasses both requirements and reliably returns high-quality formats.
+    # visionos client: returns high-quality https formats without PO Token or SABR restrictions.
+    # android_vr/android/mweb now require GVS PO Token and are blocked by SABR experiment.
     ydl_opts = {
         "format": fmt,
         "outtmpl": output_path,
@@ -274,7 +356,7 @@ async def _download_youtube_video(video, db):
         "nopart": True,
         "overwrites": True,
         "extractor_args": {
-            "youtube": {"player_client": ["android_vr", "android", "web"]}
+            "youtube": {"player_client": ["visionos", "web"]}
         },
         "progress_hooks": [_progress_hook],
         "postprocessors": [
@@ -426,7 +508,19 @@ async def _stage_ai_analysis(video, db):
     )
 
     brain = AIBrainService()
-    analysis = await brain.analyze_transcript(transcript)
+
+    # Load audio energy peaks if available
+    energy_file = os.path.join("storage", "videos", f"{video.id}_energy.json")
+    hype_markers = []
+    if os.path.exists(energy_file):
+        try:
+            with open(energy_file) as f:
+                hype_markers = json.load(f)
+            logger.info(f"[Pipeline] Loaded {len(hype_markers)} audio hype markers")
+        except Exception:
+            pass
+
+    analysis = await brain.analyze_transcript(transcript, hype_markers=hype_markers)
 
     # Layer 2: Validate and adjust clips (extend/pass/split/reject)
     from app.workers.tasks.pipeline_validator import validate_and_adjust_clips
