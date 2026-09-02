@@ -16,6 +16,17 @@ from app.services.transcription import TranscriptResult
 SHORTS_MIN_DURATION = 60   # seconds
 SHORTS_MAX_DURATION = 180  # seconds (YouTube Shorts official limit)
 
+# Reaction keywords for objective signal scoring
+_REACTION_KEYWORDS = frozenset([
+    "anjir", "anjay", "njir", "wuih", "buset", "gila", "edan", "wtf", "gokil",
+    "yes", "yesss", "akhirnya", "berhasil", "mantap", "gg", "nice", "gas",
+    "kampret", "anjing", "tai", "bangsat", "curang", "elah", "kagak",
+    "aduh", "bahaya", "kabur", "cabut", "reset", "mati gue", "habis gue",
+    "serius", "gak nyangka", "beneran", "gimana bisa",
+    "wkwk", "hahaha", "kocak", "ngakak", "lucu",
+    "epic", "cinema", "cinematik", "gila sih", "sumpah",
+])
+
 # ── Duration rules per moment type (mirrored in frontend DurationBadge) ─────
 # All values within SHORTS_MIN_DURATION..SHORTS_MAX_DURATION
 MOMENT_DURATION_RULES = {
@@ -300,13 +311,14 @@ Streamer self-labels momen → +10 bonus score (bukan auto 70+, karena streamer 
 - Loading screen / menu utama / lobby tanpa aksi
 
 ═══════════════════════════════════════════════════════
-HASHTAG STRATEGY (10-15 tags, TANPA simbol #)
+HASHTAG STRATEGY (5-8 tags berkualitas tinggi, TANPA simbol #)
 ═══════════════════════════════════════════════════════
 
-Lapisan 1 — Game specific (3-4): battlefield6, bf6, valorant, kcd2, arcraiders, assassinscreed, acblackflag
-Lapisan 2 — Gaming Indonesia (3-4): gamingindonesia, streamerindonesia, gamingid, indogamer
-Lapisan 3 — Moment specific: clutch→clutchmoment,epicmoment | funny→funnygaming,ngakak | rage→ragemoment,gaming | fail→gamingfail,epicfail
-Lapisan 4 — General reach (2-3): shorts, youtubeshorts, viral, fyp, gaming
+Prioritaskan relevansi di atas kuantitas:
+  1 tag game spesifik: battlefield6, bf6, valorant, kcd2, assassinscreed
+  1-2 tag moment: clutchmoment, epicmoment, funnygaming, ragemoment, gamingfail
+  1 tag Indonesia: gamingindonesia atau indogamer
+  1-2 tag platform: shorts, youtubeshorts
 
 ═══════════════════════════════════════════════════════
 GAYA JUDUL PER MOMENT TYPE
@@ -478,12 +490,16 @@ class AIBrainService:
                 hype_markers=hype_markers,
             )
 
-        # Multi-pass for long videos
+        # Multi-pass for long videos — use hype candidate windows when available
         t0 = time.perf_counter()
-        windows = self._build_windows(transcript.segments, transcript.duration)
+        if hype_markers:
+            windows = self._build_hype_candidate_windows(
+                transcript.segments, hype_markers, transcript.duration
+            )
+        else:
+            windows = self._build_windows(transcript.segments, transcript.duration)
         logger.info(
-            f"[AI] Multi-pass: {len(windows)} windows × 30min "
-            f"for {transcript.duration/60:.0f}min video"
+            f"[AI] Multi-pass: {len(windows)} windows for {transcript.duration/60:.0f}min video"
         )
 
         all_clips: List[ClipSuggestion] = []
@@ -519,8 +535,12 @@ class AIBrainService:
             except Exception as e:
                 logger.warning(f"[AI] Window {i+1} failed: {e} — skipping")
 
-        # Deduplicate overlapping clips, sort by viral_score
+        # Deduplicate, re-score with objective signals, sort
         all_clips = self._deduplicate_clips(all_clips)
+        if hype_markers or transcript.segments:
+            all_clips = self._rescore_with_signals(
+                all_clips, transcript.segments, hype_markers or []
+            )
         all_clips.sort(key=lambda c: c.viral_score, reverse=True)
 
         logger.info(
@@ -535,6 +555,91 @@ class AIBrainService:
             tokens_used=total_tokens,
             provider_used=provider_used,
         )
+
+    def _rescore_with_signals(
+        self,
+        clips: List[ClipSuggestion],
+        segments: list,
+        hype_markers: list,
+    ) -> List[ClipSuggestion]:
+        """Re-score clips using 60% AI score + 40% objective signals.
+
+        Objective signals (0-35 total):
+          - Audio peak overlap:  0-20 (how many hype windows intersect clip)
+          - Reaction keyword density: 0-15 (exclamation/gaming keywords in transcript)
+        """
+        for clip in clips:
+            hype_count = sum(
+                1 for m in hype_markers
+                if m["start"] < clip.end_time and m["end"] > clip.start_time
+            )
+            hype_signal = min(20, hype_count * 3)
+
+            clip_text = " ".join(
+                s.text.lower() for s in segments
+                if clip.start_time <= s.start < clip.end_time
+            )
+            reaction_hits = sum(clip_text.count(kw) for kw in _REACTION_KEYWORDS)
+            reaction_signal = min(15, reaction_hits * 2)
+
+            objective_norm = ((hype_signal + reaction_signal) / 35) * 100
+            clip.viral_score = max(0, min(100, round(
+                0.6 * clip.viral_score + 0.4 * objective_norm
+            )))
+
+        return clips
+
+    def _build_hype_candidate_windows(
+        self,
+        segments: list,
+        hype_markers: list,
+        total_duration: float,
+        cluster_gap: float = 180.0,
+        context_before: float = 45.0,
+        context_after: float = 60.0,
+        max_windows: int = 20,
+    ) -> List[Tuple[list, float, float]]:
+        """Build focused windows around clustered audio hype peaks.
+
+        Groups nearby peaks (within cluster_gap) into clusters, then creates
+        a context window around each cluster. Falls back to regular windows
+        if too many clusters are produced.
+        """
+        if not hype_markers:
+            return self._build_windows(segments, total_duration)
+
+        sorted_markers = sorted(hype_markers, key=lambda m: m["start"])
+        clusters: list = [[sorted_markers[0]]]
+        for marker in sorted_markers[1:]:
+            if marker["start"] - clusters[-1][-1]["end"] < cluster_gap:
+                clusters[-1].append(marker)
+            else:
+                clusters.append([marker])
+
+        if len(clusters) > max_windows:
+            logger.info(
+                f"[AI] {len(clusters)} hype clusters > {max_windows} — using regular windows"
+            )
+            return self._build_windows(segments, total_duration)
+
+        windows = []
+        for cluster in clusters:
+            win_start = max(0.0, cluster[0]["start"] - context_before)
+            win_end = min(total_duration, cluster[-1]["end"] + context_after)
+            # Merge with previous window if overlapping
+            if windows and win_start <= windows[-1][2]:
+                prev_segs, prev_start, prev_end = windows[-1]
+                win_end = max(win_end, prev_end)
+                win_start = prev_start
+                windows.pop()
+            window_segs = [s for s in segments if win_start <= s.start < win_end]
+            if window_segs:
+                windows.append((window_segs, win_start, win_end))
+
+        logger.info(
+            f"[AI] Candidate windows: {len(clusters)} clusters → {len(windows)} merged windows"
+        )
+        return windows
 
     def _build_windows(
         self, segments: list, total_duration: float
@@ -592,7 +697,9 @@ class AIBrainService:
         """Single AI call on a segment list (full video or one window)."""
         t0 = time.perf_counter()
 
-        segments_text = self._smart_sample_segments(segments, self._MAX_SEGMENTS_CHARS)
+        segments_text = self._smart_sample_segments(
+            segments, self._MAX_SEGMENTS_CHARS, hype_markers=hype_markers
+        )
 
         context_parts = []
         if game_title:
@@ -667,6 +774,38 @@ TRANSCRIPT:
         raw = clips_data or {}
         clips = self._parse_clip_suggestions(raw)
 
+        # Quality check: retry once if response is poor quality
+        min_acceptable = 2
+        if len(clips) < min_acceptable or (clips and all(c.viral_score < 40 for c in clips)):
+            max_score = max((c.viral_score for c in clips), default=0)
+            logger.warning(
+                f"[AI] Poor quality ({len(clips)} clips, max_score={max_score}) — retrying"
+            )
+            messages.append({"role": "assistant", "content": content})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Respons kurang lengkap atau skor terlalu rendah. "
+                    "Generate ulang minimal 5 momen dengan viral_score >= 50. "
+                    "Fokus pada momen dengan reaksi streamer yang paling ekspresif dan intens."
+                ),
+            })
+            try:
+                content, provider_name, model_used, tokens_used_retry = \
+                    await self._call_with_fallback(messages, max_tokens=max_tokens)
+                retry_data = self._try_parse_clips(content)
+                retry_clips = self._parse_clip_suggestions(retry_data or {})
+                if len(retry_clips) > len(clips):
+                    clips = retry_clips
+                    tokens_used += tokens_used_retry
+                    logger.info(f"[AI] Retry improved: {len(clips)} clips")
+            except Exception as retry_err:
+                logger.warning(f"[AI] Retry failed: {retry_err}")
+
+        # Objective signal re-scoring for single-pass (segments available in scope)
+        if hype_markers or segments:
+            clips = self._rescore_with_signals(clips, segments, hype_markers or [])
+
         return AIAnalysisResult(
             clips=clips,
             processing_time=time.perf_counter() - t0,
@@ -714,11 +853,13 @@ TRANSCRIPT:
             logger.warning(f"generate_titles failed: {e}")
             return [clip_info.get("title", "Untitled")]
 
-    def _smart_sample_segments(self, segments: list, max_chars: int = 70_000) -> str:
-        """Chunk-based sampling: divide video into 30 time chunks, sample from each.
+    def _smart_sample_segments(
+        self, segments: list, max_chars: int = 70_000, hype_markers: Optional[list] = None
+    ) -> str:
+        """Chunk-based sampling with priority for segments near audio hype peaks.
 
-        Unlike uniform step sampling, this preserves burst moments (kill streaks,
-        clutch plays) that happen in short windows of time.
+        Priority segments (near hype peaks) get 60% of the budget at full density.
+        Remaining segments are sampled uniformly from time-based chunks.
         """
         all_lines = [
             f"[{seg.start:.1f}s - {seg.end:.1f}s]: {seg.text}"
@@ -728,12 +869,56 @@ TRANSCRIPT:
         if len(full) <= max_chars:
             return full
 
-        # Divide into 30 time-based chunks
+        # Identify priority segments: within ±60s of any hype peak
+        priority_set: set = set()
+        if hype_markers:
+            for m in hype_markers:
+                for i, seg in enumerate(segments):
+                    if m["start"] - 60 <= seg.start <= m["end"] + 60:
+                        priority_set.add(i)
+
+        priority_lines = [all_lines[i] for i in range(len(segments)) if i in priority_set]
+        other_lines = [all_lines[i] for i in range(len(segments)) if i not in priority_set]
+
+        if priority_lines:
+            # 60% budget for priority (hype zone), 40% for rest
+            priority_budget = int(max_chars * 0.60)
+            other_budget = max_chars - priority_budget
+            priority_text = "\n".join(priority_lines)
+            if len(priority_text) > priority_budget:
+                step = max(1, len(priority_lines) // max(1, priority_budget // 80))
+                priority_text = "\n".join(priority_lines[::step])
+
+            # Sample other segments uniformly across time chunks
+            total_dur = segments[-1].end if segments else 1
+            num_chunks = 20
+            chunk_dur = total_dur / num_chunks
+            chunks: list = [[] for _ in range(num_chunks)]
+            other_segs_idx = [i for i in range(len(segments)) if i not in priority_set]
+            for i in other_segs_idx:
+                seg = segments[i]
+                idx = min(int(seg.start / chunk_dur), num_chunks - 1)
+                chunks[idx].append(all_lines[i])
+
+            budget_per_chunk = max(80, other_budget // num_chunks)
+            sampled_other = []
+            for chunk_lines in chunks:
+                chunk_text = "\n".join(chunk_lines)
+                if len(chunk_text) <= budget_per_chunk:
+                    sampled_other.append(chunk_text)
+                else:
+                    step = max(1, len(chunk_lines) // max(1, budget_per_chunk // 80))
+                    sampled_other.append("\n".join(chunk_lines[::step]))
+
+            note = f"[transcript sampled — {len(priority_lines)} hype-priority segs + {len(other_lines)} uniform]\n"
+            result = note + priority_text + "\n---\n" + "\n---\n".join(sampled_other)
+            return result[:max_chars]
+
+        # Fallback: uniform chunk sampling (no hype markers)
         total_dur = segments[-1].end if segments else 1
         num_chunks = 30
         chunk_dur = total_dur / num_chunks
-        chunks: list = [[] for _ in range(num_chunks)]
-
+        chunks = [[] for _ in range(num_chunks)]
         for seg, line in zip(segments, all_lines):
             idx = min(int(seg.start / chunk_dur), num_chunks - 1)
             chunks[idx].append(line)
@@ -748,10 +933,7 @@ TRANSCRIPT:
                 step = max(1, len(chunk_lines) // max(1, budget // 80))
                 sampled.append("\n".join(chunk_lines[::step]))
 
-        note = (
-            f"[transcript sampled per {chunk_dur/60:.1f}min chunk "
-            f"dari video {total_dur/60:.0f} menit]\n"
-        )
+        note = f"[transcript sampled per {chunk_dur/60:.1f}min chunk dari video {total_dur/60:.0f} menit]\n"
         result = note + "\n---\n".join(sampled)
         return result[:max_chars]
 
@@ -807,7 +989,6 @@ TRANSCRIPT:
                     titles.append(titles[0])
                 titles = titles[:3]
 
-                # Clean hashtags
                 tags = [
                     h.lstrip("#").strip().lower()
                     for h in item.get("hashtags", [])
@@ -838,7 +1019,7 @@ TRANSCRIPT:
                         titles=titles,
                         hook_text=item.get("hook_text", "")[:200],
                         description=item.get("description", "")[:1000],
-                        hashtags=tags[:15],
+                        hashtags=tags[:8],
                         thumbnail_prompt=item.get("thumbnail_prompt", ""),
                         reason=item.get("reason", "")[:300],
                     )
