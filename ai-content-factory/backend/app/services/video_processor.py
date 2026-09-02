@@ -889,7 +889,7 @@ class VideoProcessorService:
             "Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, "
             "Encoding\n"
             "Style: Default,Montserrat,46,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,"
-            "1,0,0,0,100,100,0,0,3,3,0,2,60,60,560,1\n"
+            "1,0,0,0,100,100,0,0,3,3,0,2,60,60,390,1\n"
             # Rewind marker: smaller, centered, shown briefly at hook→build transition
             "Style: Rewind,Montserrat,38,&H00FFFFFF,&H000000FF,&H00000000,&HCC000000,"
             "1,0,0,0,100,100,0,0,3,2,0,5,60,60,960,1\n\n"
@@ -1032,8 +1032,17 @@ def _remap_timestamp(
     return None
 
 
-def _wrap_caption(text: str, max_chars: int = 28) -> str:
-    """Wrap caption text at word boundary, max 2 lines."""
+def _wrap_caption(text: str, max_chars: int = 22) -> str:
+    """Wrap caption text at word boundary, max 2 lines, hard-truncate long segments."""
+    # Whisper can emit multi-sentence segments — take only the first sentence
+    for sep in (".", "!", "?", ","):
+        if sep in text and text.index(sep) < 60:
+            text = text[: text.index(sep) + 1]
+            break
+    # Hard limit to prevent overflow even on long single-sentence segments
+    if len(text) > 55:
+        text = text[:55].rsplit(" ", 1)[0]
+
     words = text.split()
     lines, current = [], ""
     for word in words:
@@ -1042,7 +1051,7 @@ def _wrap_caption(text: str, max_chars: int = 28) -> str:
         else:
             if current:
                 lines.append(current)
-            current = word
+            current = word[:max_chars]  # hard-truncate single word if too long
         if len(lines) >= 2:
             break
     if current and len(lines) < 2:
