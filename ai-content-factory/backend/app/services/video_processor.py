@@ -176,6 +176,71 @@ async def _get_video_height(video_path: str) -> int:
 
 
 class VideoProcessorService:
+    async def hook_first_cut(
+        self,
+        input_path: str,
+        output_path: str,
+        start_time: float,
+        end_time: float,
+        peak_time: float,
+        hook_duration: float = 2.0,
+    ) -> str:
+        """Non-linear hook-first edit: show peak preview → rewind → build → payoff.
+
+        Structure:
+          [HOOK: peak → peak+hook_duration]  ← climax preview (stops scroll)
+          [BUILD: start → peak]              ← tension build-up
+          [PAYOFF: peak → end]               ← climax + reaction
+        """
+        buildup_sec = peak_time - start_time
+        if buildup_sec < 8:
+            # Not enough build-up — fall back to linear cut
+            logger.info(f"[VideoProcessor] Hook-first skipped: build-up only {buildup_sec:.1f}s")
+            return await self.cut_clip(input_path, output_path, start_time, end_time)
+
+        hook_end = min(peak_time + hook_duration, end_time)
+        encoder = get_encoder()
+        source_height = await _get_video_height(input_path)
+        params = get_encode_params(source_height)
+
+        filter_complex = (
+            f"[0:v]trim=start={peak_time}:end={hook_end},setpts=PTS-STARTPTS[vhook];"
+            f"[0:v]trim=start={start_time}:end={peak_time},setpts=PTS-STARTPTS[vbuild];"
+            f"[0:v]trim=start={peak_time}:end={end_time},setpts=PTS-STARTPTS[vpayoff];"
+            f"[vhook][vbuild][vpayoff]concat=n=3:v=1:a=0[vout];"
+            f"[0:a]atrim=start={peak_time}:end={hook_end},asetpts=PTS-STARTPTS[ahook];"
+            f"[0:a]atrim=start={start_time}:end={peak_time},asetpts=PTS-STARTPTS[abuild];"
+            f"[0:a]atrim=start={peak_time}:end={end_time},asetpts=PTS-STARTPTS[apayoff];"
+            f"[ahook][abuild][apayoff]concat=n=3:v=0:a=1[aout]"
+        )
+
+        v_flags = build_video_encode_flags(encoder, params)
+        cmd = (
+            ["ffmpeg", "-y", "-i", input_path,
+             "-filter_complex", filter_complex,
+             "-map", "[vout]", "-map", "[aout]"]
+            + v_flags
+            + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+        )
+        try:
+            await self._run_ffmpeg(cmd)
+            logger.info(
+                f"[VideoProcessor] Hook-first edit done: "
+                f"hook={hook_duration:.1f}s build={buildup_sec:.1f}s"
+            )
+            return output_path
+        except VideoProcessingError as e:
+            logger.warning(f"Hook-first NVENC failed, falling back to libx264: {e}")
+            cmd_cpu = (
+                ["ffmpeg", "-y", "-i", input_path,
+                 "-filter_complex", filter_complex,
+                 "-map", "[vout]", "-map", "[aout]"]
+                + build_cpu_encode_flags(params)
+                + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
+            )
+            await self._run_ffmpeg(cmd_cpu)
+            return output_path
+
     async def cut_clip(
         self,
         input_path: str,

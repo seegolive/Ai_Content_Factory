@@ -98,6 +98,7 @@ class ClipSuggestion:
     thumbnail_prompt: str
     reason: str
     moment_type: str = "epic"  # clutch|funny|achievement|rage|epic|fail|tutorial
+    peak_time: Optional[float] = None  # timestamp of climax moment for hook-first edit
 
 
 @dataclass
@@ -305,14 +306,17 @@ PRINSIP: 1 emoji maksimal, CAPS untuk emphasis, Bahasa Indonesia natural
 
 Untuk setiap clip, generate:
 1. start_time dan end_time (dalam detik) — NATURAL, tidak dipaksakan
-2. viral_score (0-100)
-3. moment_type: salah satu dari "clutch", "funny", "achievement", "rage", "epic", "fail", "tutorial"
-4. titles: TEPAT 3 varian (emosional, curiosity gap, achievement-style) — dalam Bahasa Indonesia
-5. hook_text: kalimat pembuka <10 kata yang langsung menarik perhatian
-6. description: 2-3 kalimat deskripsi SEO YouTube Bahasa Indonesia dengan keywords
-7. hashtags: 10-15 hashtag relevan TANPA simbol #
-8. thumbnail_prompt: deskripsi gambar SDXL untuk thumbnail ideal
-9. reason: 1-2 kalimat kenapa segmen ini viral
+2. peak_time (dalam detik) — timestamp tepat saat klimaks/kill/puncak momen terjadi di dalam clip
+   Contoh: clip 120–190s, kill terjadi di detik 155 → peak_time: 155.0
+   Ini digunakan untuk "hook-first edit": preview klimaks dulu 1-2 detik, lalu mundur ke awal clip.
+3. viral_score (0-100)
+4. moment_type: salah satu dari "clutch", "funny", "achievement", "rage", "epic", "fail", "tutorial"
+5. titles: TEPAT 3 varian (emosional, curiosity gap, achievement-style) — dalam Bahasa Indonesia
+6. hook_text: kalimat pembuka <10 kata yang langsung menarik perhatian
+7. description: 2-3 kalimat deskripsi SEO YouTube Bahasa Indonesia dengan keywords
+8. hashtags: 10-15 hashtag relevan TANPA simbol #
+9. thumbnail_prompt: deskripsi gambar SDXL untuk thumbnail ideal
+10. reason: 1-2 kalimat kenapa segmen ini viral
 
 Output HANYA JSON valid. TIDAK ADA teks di luar JSON. Schema:
 {
@@ -320,6 +324,7 @@ Output HANYA JSON valid. TIDAK ADA teks di luar JSON. Schema:
     {
       "start_time": 120.0,
       "end_time": 190.0,
+      "peak_time": 155.0,
       "viral_score": 87,
       "moment_type": "clutch",
       "titles": ["Judul 1", "Judul 2", "Judul 3"],
@@ -787,10 +792,17 @@ TRANSCRIPT:
                     f"Layer1 clip: {mt} {start:.0f}s-{end:.0f}s ({duration:.0f}s) score={score}"
                 )
 
+                # peak_time must be within [start_time, end_time]
+                raw_peak = item.get("peak_time")
+                peak = float(raw_peak) if raw_peak is not None else None
+                if peak is not None and not (start <= peak <= end):
+                    peak = None  # discard invalid peak
+
                 clips.append(
                     ClipSuggestion(
                         start_time=start,
                         end_time=end,
+                        peak_time=peak,
                         viral_score=score,
                         moment_type=mt,
                         titles=titles,

@@ -561,6 +561,7 @@ async def _stage_ai_analysis(video, db):
             description=suggestion.description,
             start_time=suggestion.start_time,
             end_time=suggestion.end_time,
+            peak_time=suggestion.peak_time,
             duration=suggestion.end_time - suggestion.start_time,
             viral_score=suggestion.viral_score,
             moment_type=suggestion.moment_type,
@@ -819,18 +820,44 @@ async def _stage_video_processing(video, db):
 
     for clip in clips:
         try:
-            # Single-pass: cut + vertical crop combined directly from the source file.
-            # No intermediate horizontal file — ~50% faster per clip.
             vertical_path = os.path.join(clips_dir, f"{clip.id}_vertical.mp4")
-            await processor.resize_to_vertical_smart(
-                input_path=video.file_path,
-                output_path=vertical_path,
-                game_profile=default_game_profile,
-                channel_config=channel_config,
-                start_time=clip.start_time,
-                end_time=clip.end_time,
-            )
-            logger.info(f"[Pipeline] Cut+crop done for clip {clip.id}")
+
+            # Hook-first edit: rearrange segments if peak_time is available
+            if clip.peak_time and (clip.peak_time - clip.start_time) >= 8:
+                temp_path = os.path.join(clips_dir, f"{clip.id}_hooked_tmp.mp4")
+                await processor.hook_first_cut(
+                    input_path=video.file_path,
+                    output_path=temp_path,
+                    start_time=clip.start_time,
+                    end_time=clip.end_time,
+                    peak_time=clip.peak_time,
+                )
+                # Crop the reordered clip to vertical (start=0 since already cut)
+                duration = clip.end_time - clip.start_time
+                await processor.resize_to_vertical_smart(
+                    input_path=temp_path,
+                    output_path=vertical_path,
+                    game_profile=default_game_profile,
+                    channel_config=channel_config,
+                    start_time=0,
+                    end_time=duration,
+                )
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                logger.info(f"[Pipeline] Hook-first + crop done for clip {clip.id}")
+            else:
+                # Standard linear cut + crop
+                await processor.resize_to_vertical_smart(
+                    input_path=video.file_path,
+                    output_path=vertical_path,
+                    game_profile=default_game_profile,
+                    channel_config=channel_config,
+                    start_time=clip.start_time,
+                    end_time=clip.end_time,
+                )
+                logger.info(f"[Pipeline] Cut+crop done for clip {clip.id}")
 
             # QC check on the vertical output
             qc_result = await processor.run_qc_check(vertical_path)

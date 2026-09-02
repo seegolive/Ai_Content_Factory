@@ -30,6 +30,7 @@ class Clip(Base):
     description: Mapped[str] = mapped_column(Text, nullable=True)
     start_time: Mapped[float] = mapped_column(Float, nullable=False)
     end_time: Mapped[float] = mapped_column(Float, nullable=False)
+    peak_time: Mapped[float] = mapped_column(Float, nullable=True)
     duration: Mapped[float] = mapped_column(Float, nullable=True)
     viral_score: Mapped[int] = mapped_column(Integer, nullable=True)
     moment_type: Mapped[str] = mapped_column(
