@@ -159,10 +159,6 @@ def _build_provider_chain(temperature: float = 0.2) -> list:
         },
     ]
     return base
-            "temperature": temperature,
-        },
-    ]
-    return base
 
 
 # ── System prompt: Indonesian gaming content specialist ──────────────────────
@@ -389,6 +385,39 @@ Identifikasi 15-25 momen — lebih banyak lebih baik, pipeline yang akan filter.
 Minimum viral_score untuk diinclude: 40. Lebih baik 20 clip skor 40-80 daripada 5 clip skor 80+.
 Urutkan clips dari viral_score tertinggi ke terendah."""
 
+# Self-label phrases that signal the streamer knows the moment is good
+_SELF_LABEL_PHRASES = [
+    "epic moment", "cinema", "cinematik", "gila sih", "sumpah gila",
+    "ini tuh", "gila banget", "clip ini", "ini momen", "scene bagus",
+    "keren banget", "ini baru", "gak nyangka bisa", "gokil banget",
+]
+
+_DISCOVERY_EVAL_PROMPT = """Kamu adalah evaluator momen gaming. Tugasmu HANYA mengevaluasi kandidat yang sudah dideteksi sistem.
+JANGAN mencari momen baru — hanya nilai kandidat yang diberikan.
+
+PRINSIP UTAMA: Lebih baik loloskan momen yang ternyata biasa daripada LEWATKAN momen yang bagus.
+Jika ragu → tetap include (is_clip: true).
+
+Untuk setiap kandidat yang IS a good clip, tentukan:
+- start_time, end_time (dalam detik absolut dari awal video)
+- peak_time: titik puncak/klimaks dalam clip
+- moment_type: clutch|funny|achievement|rage|epic|fail|tutorial
+- viral_score: 0-100
+- titles: 3 judul Bahasa Indonesia (situation / open-loop / result)
+- hook_text: kalimat alami <10 kata yang membuat penonton penasaran
+- hashtags: 5-8 tag tanpa #
+- reason: 1 kalimat kenapa bagus
+
+Output JSON:
+{
+  "evaluations": [
+    {"candidate_index": 0, "is_clip": true, "start_time": 120.0, "end_time": 195.0, "peak_time": 162.0,
+     "moment_type": "clutch", "viral_score": 85, "titles": ["...","...","..."],
+     "hook_text": "...", "hashtags": ["bf6","clutch"], "reason": "..."},
+    {"candidate_index": 1, "is_clip": false}
+  ]
+}"""
+
 
 class AIBrainService:
     async def _call_provider(
@@ -507,17 +536,59 @@ class AIBrainService:
                 hype_markers=hype_markers,
             )
 
-        # Multi-pass for long videos — use hype candidate windows when available
-        t0 = time.perf_counter()
-        if hype_markers:
-            windows = self._build_hype_candidate_windows(
-                transcript.segments, hype_markers, transcript.duration
+        if transcript.duration <= self._MULTIPASS_THRESHOLD_S:
+            return await self._analyze_single_pass(
+                transcript.segments, transcript.duration, transcript.language,
+                transcript.word_count, channel_info, game_title, channel_name,
+                hype_markers=hype_markers,
             )
-        else:
+
+        # ── High-recall pipeline for long videos ───────────────────────────
+        # Phase 1: Detect ALL candidate timestamps (audio + keyword + self-label)
+        # Phase 2: Expand each to full ±90s context (no sampling)
+        # Phase 3: Batch AI evaluation (5 candidates per call)
+        # Phase 4: Rescore with signals → deduplicate → rank
+        t0 = time.perf_counter()
+
+        candidates = self._detect_candidates(transcript.segments, hype_markers or [])
+
+        if not candidates:
+            # Fallback to windowed approach if no candidates detected
+            logger.warning("[AI] No candidates detected, falling back to windowed analysis")
             windows = self._build_windows(transcript.segments, transcript.duration)
-        logger.info(
-            f"[AI] Multi-pass: {len(windows)} windows for {transcript.duration/60:.0f}min video"
-        )
+        else:
+            contexts = self._build_candidate_contexts(transcript.segments, candidates)
+            all_clips = await self._batch_evaluate_candidates(
+                contexts,
+                total_duration=transcript.duration,
+                game_title=game_title,
+            )
+
+            if not all_clips:
+                # Fallback if discovery found nothing
+                logger.warning("[AI] Discovery found 0 clips, falling back to windowed")
+                windows = self._build_windows(transcript.segments, transcript.duration)
+            else:
+                # Rescore + deduplicate + rank
+                all_clips = self._rescore_with_signals(
+                    all_clips, transcript.segments, hype_markers or []
+                )
+                all_clips = self._deduplicate_clips(all_clips)
+                all_clips.sort(key=lambda c: c.viral_score, reverse=True)
+                logger.info(
+                    f"[AI] High-recall done: {len(all_clips)} clips "
+                    f"in {time.perf_counter()-t0:.1f}s"
+                )
+                return AIAnalysisResult(
+                    clips=all_clips,
+                    processing_time=time.perf_counter() - t0,
+                    model_used="discovery",
+                    tokens_used=0,
+                    provider_used="OpenRouter Gemini Flash",
+                )
+
+        # Windowed fallback path
+        logger.info(f"[AI] Windowed fallback: {len(windows)} windows for {transcript.duration/60:.0f}min")
 
         all_clips: List[ClipSuggestion] = []
         total_tokens = 0
@@ -657,6 +728,187 @@ class AIBrainService:
             f"[AI] Candidate windows: {len(clusters)} clusters → {len(windows)} merged windows"
         )
         return windows
+
+    def _detect_candidates(
+        self,
+        segments: list,
+        hype_markers: list,
+        min_gap: float = 30.0,
+    ) -> list:
+        """Detect candidate timestamps from audio peaks + text signals.
+
+        Groups nearby signals into buckets (min_gap seconds) to avoid duplicates.
+        Returns sorted list of {timestamp, sources} dicts.
+        """
+        candidates: dict = {}
+
+        # A. Audio energy peaks (strongest signal)
+        for m in hype_markers:
+            ts = (m["start"] + m["end"]) / 2
+            bucket = int(ts // min_gap)
+            if bucket not in candidates:
+                candidates[bucket] = {"timestamp": ts, "sources": [], "score": 0}
+            candidates[bucket]["sources"].append("audio")
+            candidates[bucket]["score"] += 2
+
+        # B. Reaction keyword density from transcript
+        for seg in segments:
+            text_lower = seg.text.lower()
+            hits = sum(1 for kw in _REACTION_KEYWORDS if kw in text_lower)
+            if hits < 2:
+                continue
+            bucket = int(seg.start // min_gap)
+            if bucket not in candidates:
+                candidates[bucket] = {"timestamp": seg.start, "sources": [], "score": 0}
+            if "keyword" not in candidates[bucket]["sources"]:
+                candidates[bucket]["sources"].append("keyword")
+            candidates[bucket]["score"] += hits
+
+        # C. Self-label phrases (streamer signals their own best moments)
+        for seg in segments:
+            text_lower = seg.text.lower()
+            if any(label in text_lower for label in _SELF_LABEL_PHRASES):
+                bucket = int(seg.start // min_gap)
+                if bucket not in candidates:
+                    candidates[bucket] = {"timestamp": seg.start, "sources": [], "score": 0}
+                if "self_label" not in candidates[bucket]["sources"]:
+                    candidates[bucket]["sources"].append("self_label")
+                candidates[bucket]["score"] += 5
+
+        result = sorted(candidates.values(), key=lambda c: c["timestamp"])
+        logger.info(
+            f"[AI] Detected {len(result)} candidates "
+            f"(audio={sum(1 for c in result if 'audio' in c['sources'])} "
+            f"keyword={sum(1 for c in result if 'keyword' in c['sources'])} "
+            f"self_label={sum(1 for c in result if 'self_label' in c['sources'])})"
+        )
+        return result
+
+    def _build_candidate_contexts(
+        self,
+        segments: list,
+        candidates: list,
+        context_before: float = 75.0,
+        context_after: float = 90.0,
+    ) -> list:
+        """Extract FULL transcript context for each candidate (no sampling).
+
+        Returns list of context dicts ready for batch evaluation.
+        """
+        contexts = []
+        for i, cand in enumerate(candidates):
+            ts = cand["timestamp"]
+            ctx_start = max(0.0, ts - context_before)
+            ctx_end = ts + context_after
+            ctx_segs = [s for s in segments if ctx_start <= s.start <= ctx_end]
+            if not ctx_segs:
+                continue
+            transcript_text = "\n".join(
+                f"[{s.start:.1f}s]: {s.text}" for s in ctx_segs
+            )
+            contexts.append({
+                "index": i,
+                "timestamp": ts,
+                "signals": cand["sources"],
+                "score": cand.get("score", 0),
+                "ctx_start": ctx_start,
+                "ctx_end": ctx_end,
+                "transcript": transcript_text,
+            })
+        return contexts
+
+    async def _batch_evaluate_candidates(
+        self,
+        contexts: list,
+        batch_size: int = 5,
+        total_duration: float = 0,
+        game_title: str = "",
+    ) -> List[ClipSuggestion]:
+        """Evaluate candidates in batches. AI receives full context per candidate.
+
+        Uses _DISCOVERY_EVAL_PROMPT — AI evaluates, not discovers.
+        """
+        all_clips: List[ClipSuggestion] = []
+
+        for batch_start in range(0, len(contexts), batch_size):
+            batch = contexts[batch_start: batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (len(contexts) + batch_size - 1) // batch_size
+            logger.info(f"[AI] Discovery batch {batch_num}/{total_batches}: {len(batch)} candidates")
+
+            # Build the user message with all candidates in batch
+            parts = []
+            if game_title:
+                parts.append(f"Game: {game_title}")
+            if total_duration:
+                parts.append(f"Video duration: {total_duration:.0f}s ({total_duration/60:.0f}min)")
+            parts.append("")
+
+            for ctx in batch:
+                mins, secs = divmod(int(ctx["timestamp"]), 60)
+                signals_str = "+".join(ctx["signals"]) if ctx["signals"] else "combined"
+                parts.append(
+                    f"=== KANDIDAT {ctx['index']} @ {mins:02d}:{secs:02d} "
+                    f"[signals: {signals_str}] ==="
+                )
+                parts.append(ctx["transcript"])
+                parts.append("")
+
+            user_msg = "\n".join(parts)
+
+            messages = [
+                {"role": "system", "content": _DISCOVERY_EVAL_PROMPT},
+                {"role": "user", "content": user_msg},
+            ]
+            max_tokens = max(2000, len(batch) * 400)
+
+            try:
+                content, _, _, _ = await self._call_with_fallback(
+                    messages, max_tokens=max_tokens
+                )
+                raw = self._try_parse_clips(content)
+                if not raw:
+                    logger.warning(f"[AI] Batch {batch_num} parse failed")
+                    continue
+
+                for ev in raw.get("evaluations", []):
+                    if not ev.get("is_clip"):
+                        continue
+                    try:
+                        start = float(ev["start_time"])
+                        end = float(ev["end_time"])
+                        if end <= start:
+                            continue
+                        peak = float(ev.get("peak_time") or (start + end) / 2)
+                        if not (start <= peak <= end):
+                            peak = (start + end) / 2
+                        score = max(0, min(100, int(ev.get("viral_score", 50))))
+                        mt = ev.get("moment_type", "epic")
+                        if mt not in {"clutch","funny","achievement","rage","epic","fail","tutorial"}:
+                            mt = "epic"
+                        titles = ev.get("titles", [])
+                        if not isinstance(titles, list) or not titles:
+                            titles = [ev.get("hook_text", "Gaming moment")]
+                        while len(titles) < 3:
+                            titles.append(titles[0])
+                        tags = [h.lstrip("#").strip().lower() for h in ev.get("hashtags", []) if h]
+                        all_clips.append(ClipSuggestion(
+                            start_time=start, end_time=end, peak_time=peak,
+                            viral_score=score, moment_type=mt, titles=titles[:3],
+                            hook_text=ev.get("hook_text", "")[:200],
+                            description=ev.get("reason", "")[:500],
+                            hashtags=tags[:8],
+                            thumbnail_prompt="",
+                            reason=ev.get("reason", "")[:300],
+                        ))
+                    except (KeyError, ValueError, TypeError) as e:
+                        logger.debug(f"[AI] Eval item parse error: {e}")
+
+            except Exception as e:
+                logger.warning(f"[AI] Discovery batch {batch_num} failed: {e}")
+
+        logger.info(f"[AI] Discovery complete: {len(all_clips)} clips from {len(contexts)} candidates")
+        return all_clips
 
     def _build_windows(
         self, segments: list, total_duration: float

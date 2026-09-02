@@ -882,16 +882,17 @@ class VideoProcessorService:
 
         # Build ASS subtitle file — avoids argument-list-too-long from chained drawtext
         ass_header = (
-            "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n"
+            "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
+            "WrapStyle: 2\n\n"  # end-of-line word wrap
             "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
             "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, "
             "Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, "
             "Encoding\n"
-            "Style: Default,Montserrat,52,&H00FFFFFF,&H000000FF,&H00000000,&H88000000,"
-            "1,0,0,0,100,100,0,0,3,3,0,2,20,20,350,1\n"
+            "Style: Default,Montserrat,46,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,"
+            "1,0,0,0,100,100,0,0,3,3,0,2,60,60,560,1\n"
             # Rewind marker: smaller, centered, shown briefly at hook→build transition
-            "Style: Rewind,Montserrat,40,&H00FFFFFF,&H000000FF,&H00000000,&HCC000000,"
-            "1,0,0,0,100,100,0,0,3,2,0,5,40,40,960,1\n\n"
+            "Style: Rewind,Montserrat,38,&H00FFFFFF,&H000000FF,&H00000000,&HCC000000,"
+            "1,0,0,0,100,100,0,0,3,2,0,5,60,60,960,1\n\n"
             "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         )
         ass_events = []
@@ -919,10 +920,10 @@ class VideoProcessorService:
             out_end = _remap_timestamp(src_end, clip_start, peak_time, hook_duration, clip_end)
             if out_start is None or out_end is None or out_start >= out_end or out_start < 0:
                 continue
-            wrapped = _wrap_caption(text).replace("\n", "\\N")
+            wrapped = _wrap_caption(text, max_chars=22).replace("\n", "\\N")
             ass_events.append(
                 f"Dialogue: 0,{_fmt_ass(out_start)},{_fmt_ass(out_end)},"
-                f"Default,,0,0,0,,{wrapped}"
+                f"Default,,0,0,0,,{{\\q2}}{wrapped}"  # \q2 = end-of-line word wrap
             )
 
         if not ass_events:
