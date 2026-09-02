@@ -822,46 +822,20 @@ async def _stage_video_processing(video, db):
         try:
             vertical_path = os.path.join(clips_dir, f"{clip.id}_vertical.mp4")
 
-            # Hook-first edit: rearrange segments if peak_time is available
-            if clip.peak_time and (clip.peak_time - clip.start_time) >= 8:
-                temp_path = os.path.join(clips_dir, f"{clip.id}_hooked_tmp.mp4")
-                await processor.hook_first_cut(
-                    input_path=video.file_path,
-                    output_path=temp_path,
-                    start_time=clip.start_time,
-                    end_time=clip.end_time,
-                    peak_time=clip.peak_time,
-                )
-                # Crop the reordered clip to vertical (start=0 since already cut)
-                duration = clip.end_time - clip.start_time
-                await processor.resize_to_vertical_smart(
-                    input_path=temp_path,
-                    output_path=vertical_path,
-                    game_profile=default_game_profile,
-                    channel_config=channel_config,
-                    start_time=0,
-                    end_time=duration,
-                )
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-                logger.info(f"[Pipeline] Hook-first + crop done for clip {clip.id}")
-            else:
-                # Standard linear cut + crop
-                await processor.resize_to_vertical_smart(
-                    input_path=video.file_path,
-                    output_path=vertical_path,
-                    game_profile=default_game_profile,
-                    channel_config=channel_config,
-                    start_time=clip.start_time,
-                    end_time=clip.end_time,
-                )
-                logger.info(f"[Pipeline] Cut+crop done for clip {clip.id}")
+            # Linear cut + vertical crop (hook-first formula removed — causes jarring jump)
+            await processor.resize_to_vertical_smart(
+                input_path=video.file_path,
+                output_path=vertical_path,
+                game_profile=default_game_profile,
+                channel_config=channel_config,
+                start_time=clip.start_time,
+                end_time=clip.end_time,
+            )
+            logger.info(f"[Pipeline] Cut+crop done for clip {clip.id}")
 
             # Burn captions from transcript (Montserrat Bold, y=h*0.74)
             cap_path = os.path.join(clips_dir, f"{clip.id}_captioned.mp4")
-            hook_dur = 4.0 if (clip.peak_time and (clip.peak_time - clip.start_time) >= 8) else 0.0
+            hook_dur = 0.0  # hook-first formula removed
             try:
                 # Only include segments within the clip's time range (+ small buffer)
                 cap_segments = [

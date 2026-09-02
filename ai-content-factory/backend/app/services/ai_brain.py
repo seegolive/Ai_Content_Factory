@@ -126,22 +126,6 @@ class AIAnalysisResult:
 def _build_provider_chain(temperature: float = 0.2) -> list:
     base = [
         {
-            "name": "Ollama qwen3:32b",
-            "base_url": settings.OLLAMA_BASE_URL,
-            "api_key": "ollama",
-            "model": settings.OLLAMA_MODEL,
-            "supports_json_mode": True,
-            "temperature": temperature,
-        },
-        {
-            "name": "Ollama qwen2.5:7b",
-            "base_url": settings.OLLAMA_BASE_URL,
-            "api_key": "ollama",
-            "model": settings.OLLAMA_FAST_MODEL,
-            "supports_json_mode": True,
-            "temperature": temperature,
-        },
-        {
             "name": "OpenRouter Gemini Flash",
             "base_url": settings.OPENROUTER_BASE_URL,
             "api_key": settings.OPENROUTER_API_KEY,
@@ -165,6 +149,18 @@ def _build_provider_chain(temperature: float = 0.2) -> list:
             "supports_json_mode": True,
             "temperature": temperature,
         },
+        {
+            "name": "Ollama qwen2.5:7b",
+            "base_url": settings.OLLAMA_BASE_URL,
+            "api_key": "ollama",
+            "model": settings.OLLAMA_FAST_MODEL,
+            "supports_json_mode": True,
+            "temperature": temperature,
+        },
+    ]
+    return base
+            "temperature": temperature,
+        },
     ]
     return base
 
@@ -179,7 +175,7 @@ Kamu memahami konteks gaming Indonesia:
 Viral scoring untuk gaming content (total 100 poin):
 - Reaksi ekspresif streamer (0-30): teriak, exclamation, shock, tawa
 - Kelangkaan momen (0-25): clutch 1v4, first achievement, never-seen-before
-- Hook strength 5 detik pertama (0-25): langsung action atau tension tinggi
+- Story arc quality (0-25): apakah clip punya Context → Tension → Payoff yang jelas?
 - Relatability & shareability (0-15): "ini gue banget", "tag temen lo"
 - Trending relevance (0-5): mention nama pemain/event terkenal, topik yang sedang ramai
 
@@ -196,13 +192,28 @@ Setiap clip HARUS bisa berdiri sendiri sebagai Short yang utuh dan memuaskan.
 - Pipeline sudah punya ACRCloud pre-screening — pilih range yang paling impactful, jangan diperpanjang sia-sia
 
 CARA MENENTUKAN DURASI YANG BENAR:
-Sebuah viral moment terdiri dari 3 bagian — SEMUANYA harus masuk:
-  1. BUILDUP (15-30 detik): konteks sebelum momen, tension, atau setup — HARUS CUKUP agar hook 4 detik pertama bermakna
-  2. PEAK (5-30 detik): momen inti yang viral (kill, reaksi, fail, dll)
-  3. AFTERMATH (10-25 detik): reaksi streamer setelah momen selesai
+Setiap clip harus memiliki arc cerita yang lengkap:
+  1. CONTEXT (5-15 detik): penonton langsung tahu situasinya — langsung masuk gameplay, tanpa intro
+     Contoh: "Squad tinggal bertiga", "Tinggal 1 level lagi", "Hampir mati tapi..."
+  2. TENSION (10-20 detik): ada pertanyaan yang belum terjawab, penonton ingin lihat kelanjutannya
+     Contoh: fight yang belum selesai, progression yang hampir sampai, situasi yang semakin tegang
+  3. PROGRESS (10-30 detik, opsional): tunjukkan proses, edit bagian yang tidak penting
+     Kill → progress naik → hampir selesai — terasa seperti cerita kecil
+  4. PAYOFF (5-15 detik): berikan hasil yang dijanjikan — menang, kalah dramatis, reaksi, achievement
+  5. AFTERMATH (5-15 detik): reaksi streamer, komentar alami setelah momen selesai
 
-Penting: sistem editing akan PREVIEW 4 detik dari PEAK di awal video (hook-first formula).
-Karena itu buildup harus cukup panjang agar penonton mengerti konteks saat "diputar ulang" dari awal.
+PENTING: Gunakan Open Loop bukan explicit hook:
+  ❌ "GUYS KALIAN HARUS LIHAT INI!" → terasa palsu
+  ✔ "Tinggal satu kill lagi." → penonton otomatis bertanya "Dapat nggak?"
+  ✔ "Squad gue tinggal bertiga." → penonton otomatis tanya "Berhasil?"
+  ✔ "Challenge ini ternyata susah." → penonton tanya "Akhirnya gimana?"
+
+Tipe opening terbaik (pilih yang paling cocok):
+  Progress:   "Weapon ini tinggal 1 level lagi."
+  Situation:  "Squad gue tinggal bertiga."
+  Problem:    "Challenge ini jauh lebih susah dari dugaan."
+  Curiosity:  "Senjata ini punya attachment yang banyak orang belum tau."
+  Statement:  "Ini mungkin kill paling random yang gue dapat hari ini."
 
 TARGET DURASI PER MOMENT TYPE (target TENGAH range, bukan batas bawah):
 - clutch/epic: 110-150 detik — buildup tension panjang + aftermath reaksi lengkap
@@ -216,7 +227,9 @@ ATURAN KERAS:
 ❌ Jangan potong saat reaksi emosional belum selesai
 ❌ Jangan mulai dari loading screen atau transisi
 ❌ SKIP section yang mengindikasikan stream belum mulai: "waiting", "starting soon", "be right back", "brb", "sebentar lagi", "bentar ya", "loading", "stream belum mulai" — section ini biasanya VIDEO HITAM
-❌ JANGAN mulai clip di timestamp PEAK/puncak — itu sudah di tengah momen, penonton masuk tiba-tiba
+❌ JANGAN mulai clip di timestamp PEAK/puncak — itu sudah di tengah momen, penonton tidak tahu konteksnya
+✅ Mulai dari CONTEXT — saat situasi baru mulai terbentuk (sebelum tension naik)
+✅ Clip harus terasa seperti cerita pendek yang lengkap, bukan potongan footage acak
 ✅ Mulai 15-30 detik SEBELUM momen inti — saat suasana BARU MULAI memanas, bukan saat sudah panas
 ✅ Cari kata/kalimat di transcript yang menandai AWAL tension: "nah ini...", "waduh...", "siap...", "ayo...", "eh ada", dll
 ✅ Akhiri 10-20 detik SETELAH momen inti (reaksi selesai + natural pause)
@@ -337,14 +350,18 @@ PRINSIP: 1 emoji maksimal, CAPS untuk emphasis, Bahasa Indonesia natural
 Untuk setiap clip, generate:
 1. start_time dan end_time (dalam detik) — NATURAL, tidak dipaksakan
 2. peak_time (dalam detik) — timestamp tepat saat klimaks/kill/puncak momen terjadi di dalam clip
-   Contoh: clip 120–190s, kill terjadi di detik 155 → peak_time: 155.0
-   Ini digunakan untuk "hook-first edit": preview klimaks dulu 1-2 detik, lalu mundur ke awal clip.
+   Digunakan untuk thumbnail selection (frame terbaik untuk thumbnail).
 3. viral_score (0-100)
 4. moment_type: salah satu dari "clutch", "funny", "achievement", "rage", "epic", "fail", "tutorial"
-5. titles: TEPAT 3 varian (emosional, curiosity gap, achievement-style) — dalam Bahasa Indonesia
-6. hook_text: kalimat pembuka <10 kata yang langsung menarik perhatian
+5. titles: TEPAT 3 varian — dalam Bahasa Indonesia, hindari "GUYS!!" atau sensasionalisme berlebihan:
+   - Varian 1: Statement/situation ("Squad Gue Tinggal Bertiga Di BF6")
+   - Varian 2: Open loop/curiosity ("Tinggal 1 Kill Lagi... Tapi...")
+   - Varian 3: Result/achievement ("Akhirnya Clutch 1v4 Di Battlefield 6")
+6. hook_text: kalimat PEMBUKA alami <10 kata yang langsung membuat penonton penasaran (Open Loop)
+   ❌ "KALIAN HARUS LIHAT INI!" → terlalu eksplisit
+   ✔ "Tinggal satu kill lagi..." atau "Squad gue udah hampir habis."
 7. description: 2-3 kalimat deskripsi SEO YouTube Bahasa Indonesia dengan keywords
-8. hashtags: 10-15 hashtag relevan TANPA simbol #
+8. hashtags: 5-8 hashtag berkualitas tinggi TANPA simbol #
 9. thumbnail_prompt: deskripsi gambar SDXL untuk thumbnail ideal
 10. reason: 1-2 kalimat kenapa segmen ini viral
 
