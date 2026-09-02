@@ -879,79 +879,60 @@ class VideoProcessorService:
             logger.warning(f"[Caption] Font not found at {_FONT_PATH}, skipping captions")
             return input_path
 
-        # Build subtitle SRT with remapped timestamps
-        srt_lines = []
-        idx = 1
+        # Build ASS subtitle file — avoids argument-list-too-long from chained drawtext
+        ass_header = (
+            "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n"
+            "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, "
+            "Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, "
+            "Encoding\n"
+            "Style: Default,Montserrat,52,&H00FFFFFF,&H000000FF,&H00000000,&H88000000,"
+            "1,0,0,0,100,100,0,0,3,3,0,2,20,20,350,1\n\n"
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        )
+        ass_events = []
         for seg in segments:
             src_start = seg.get("start", 0.0)
             src_end = seg.get("end", src_start + 1.0)
             text = seg.get("text", "").strip()
             if not text:
                 continue
-
-            # Remap source timestamp → output timestamp
             out_start = _remap_timestamp(src_start, clip_start, peak_time, hook_duration)
             out_end = _remap_timestamp(src_end, clip_start, peak_time, hook_duration)
             if out_start is None or out_end is None or out_start >= out_end:
                 continue
+            wrapped = _wrap_caption(text).replace("\n", "\\N")
+            ass_events.append(
+                f"Dialogue: 0,{_fmt_ass(out_start)},{_fmt_ass(out_end)},"
+                f"Default,,0,0,0,,{wrapped}"
+            )
 
-            srt_lines.append(f"{idx}")
-            srt_lines.append(f"{_fmt_srt(out_start)} --> {_fmt_srt(out_end)}")
-            # Break long lines at ~28 chars
-            srt_lines.append(_wrap_caption(text))
-            srt_lines.append("")
-            idx += 1
-
-        if not srt_lines:
-            logger.info("[Caption] No subtitle segments to burn, skipping")
+        if not ass_events:
+            logger.info("[Caption] No subtitle entries for this clip, skipping")
             return input_path
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".srt", delete=False, encoding="utf-8") as f:
-            f.write("\n".join(srt_lines))
-            srt_path = f.name
+        ass_content = ass_header + "\n".join(ass_events)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ass", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(ass_content)
+            ass_path = f.name
 
+        fonts_dir = os.path.dirname(_FONT_PATH)
+        cmd = [
+            "ffmpeg", "-y", "-i", input_path,
+            "-vf", f"subtitles={ass_path}:fontsdir={fonts_dir}",
+            "-c:v", "libx264", "-crf", "22", "-preset", "fast",
+            "-c:a", "copy", "-movflags", "+faststart",
+            output_path,
+        ]
         try:
-            # Use drawtext instead of subtitles filter — works without libass
-            # y=h*0.74: in gameplay zone, above stream overlay and YouTube UI
-            if not srt_lines:
-                return input_path
-            # Build drawtext filter chain from segments directly (more reliable than SRT)
-            dt_filters = []
-            for seg in segments:
-                src_start = seg.get("start", 0.0)
-                src_end = seg.get("end", src_start + 1.0)
-                text = seg.get("text", "").strip()
-                if not text:
-                    continue
-                out_start = _remap_timestamp(src_start, clip_start, peak_time, hook_duration)
-                out_end = _remap_timestamp(src_end, clip_start, peak_time, hook_duration)
-                if out_start is None or out_end is None or out_start >= out_end:
-                    continue
-                # Escape special chars for drawtext
-                safe_text = _wrap_caption(text).replace("'", "\\'").replace(":", "\\:")
-                dt_filters.append(
-                    f"drawtext=fontfile={_FONT_PATH}:text='{safe_text}'"
-                    f":fontsize=52:fontcolor=white:borderw=3:bordercolor=black"
-                    f":box=1:boxcolor=black@0.5:boxborderw=8"
-                    f":x=(w-text_w)/2:y=h*0.74"
-                    f":enable='between(t,{out_start:.2f},{out_end:.2f})'"
-                )
-            if not dt_filters:
-                return input_path
-            vf = ",".join(dt_filters)
-            cmd = [
-                "ffmpeg", "-y", "-i", input_path,
-                "-vf", vf,
-                "-c:v", "libx264", "-crf", "22", "-preset", "fast",
-                "-c:a", "copy", "-movflags", "+faststart",
-                output_path,
-            ]
             await self._run_ffmpeg(cmd)
-            logger.info(f"[Caption] Burned {len(dt_filters)} subtitle entries")
+            logger.info(f"[Caption] Burned {len(ass_events)} subtitle entries")
             return output_path
         finally:
             try:
-                os.remove(srt_path)
+                os.remove(ass_path)
             except OSError:
                 pass
 
@@ -987,6 +968,16 @@ def _seconds_to_srt(seconds: float) -> str:
 
 def _fmt_srt(t: float) -> str:
     return _seconds_to_srt(max(0.0, t))
+
+
+def _fmt_ass(t: float) -> str:
+    """Format seconds as ASS timestamp H:MM:SS.cc"""
+    t = max(0.0, t)
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = int(t % 60)
+    cs = int((t % 1) * 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
 def _remap_timestamp(

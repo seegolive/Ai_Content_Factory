@@ -112,14 +112,15 @@ class AIAnalysisResult:
 
 
 # ── Provider chain: tried in order, first success wins ──────────────────────
-def _build_provider_chain() -> list:
-    return [
+def _build_provider_chain(temperature: float = 0.2) -> list:
+    base = [
         {
             "name": "Ollama qwen3:32b",
             "base_url": settings.OLLAMA_BASE_URL,
-            "api_key": "ollama",  # local — any non-empty string works
+            "api_key": "ollama",
             "model": settings.OLLAMA_MODEL,
             "supports_json_mode": True,
+            "temperature": temperature,
         },
         {
             "name": "Ollama qwen2.5:7b",
@@ -127,6 +128,7 @@ def _build_provider_chain() -> list:
             "api_key": "ollama",
             "model": settings.OLLAMA_FAST_MODEL,
             "supports_json_mode": True,
+            "temperature": temperature,
         },
         {
             "name": "OpenRouter Gemini Flash",
@@ -134,6 +136,7 @@ def _build_provider_chain() -> list:
             "api_key": settings.OPENROUTER_API_KEY,
             "model": settings.OPENROUTER_MODEL,
             "supports_json_mode": False,
+            "temperature": temperature,
         },
         {
             "name": "Groq",
@@ -141,6 +144,7 @@ def _build_provider_chain() -> list:
             "api_key": settings.GROQ_API_KEY,
             "model": settings.GROQ_MODEL,
             "supports_json_mode": True,
+            "temperature": temperature,
         },
         {
             "name": "OpenRouter GPT-4o-mini",
@@ -148,8 +152,10 @@ def _build_provider_chain() -> list:
             "api_key": settings.OPENROUTER_API_KEY,
             "model": settings.OPENROUTER_FALLBACK_MODEL,
             "supports_json_mode": True,
+            "temperature": temperature,
         },
     ]
+    return base
 
 
 # ── System prompt: Indonesian gaming content specialist ──────────────────────
@@ -194,7 +200,7 @@ TARGET DURASI PER MOMENT TYPE (target TENGAH range, bukan batas bawah):
 - tutorial: 90-150 detik — tips singkat dan padat
 
 ATURAN KERAS:
-❌ DILARANG keras output clip < 45 detik — tidak akan pernah layak jadi Short
+❌ DILARANG keras output clip < 60 detik — YouTube Shorts minimum adalah 60 detik
 ❌ Jangan potong di tengah kalimat streamer
 ❌ Jangan potong saat reaksi emosional belum selesai
 ❌ Jangan mulai dari loading screen atau transisi
@@ -286,7 +292,7 @@ Reaksi lucu: "wkwk", "wkwkwk", "hahaha", "kocak", "ngakak", "lucu banget"
         "final ring", "zone", "looting"
 
 Intensitas: 1 exclamation = menarik | 2-3 dalam 10 detik = KEMUNGKINAN BESAR viral | 4+ rapid-fire = PASTI viral
-Streamer self-labels momen → langsung score 70+ (dia tahu momennya sendiri yang bagus)
+Streamer self-labels momen → +10 bonus score (bukan auto 70+, karena streamer bisa salah label)
 
 🚫 SKIP OTOMATIS (jangan generate clip dari section ini):
 - Streamer bilang "waiting", "starting soon", "be right back", "brb", "bentar ya", "sebentar lagi"
@@ -378,7 +384,7 @@ class AIBrainService:
                 "model": provider["model"],
                 "messages": messages,
                 "max_tokens": max_tokens,
-                "temperature": 0.7,
+                "temperature": provider.get("temperature", 0.2),
             }
             # Only add response_format for providers that reliably support it
             if provider.get("supports_json_mode", False):
@@ -397,9 +403,10 @@ class AIBrainService:
         self,
         messages: list,
         max_tokens: int = 4000,
+        temperature: float = 0.2,
     ) -> Tuple[str, str, str, int]:
         """Try providers in order. Return (content, provider_name, model, tokens_used)."""
-        chain = _build_provider_chain()
+        chain = _build_provider_chain(temperature)
         last_error: Optional[Exception] = None
 
         for provider in chain:
@@ -545,7 +552,7 @@ class AIBrainService:
         return windows
 
     def _deduplicate_clips(self, clips: List[ClipSuggestion]) -> List[ClipSuggestion]:
-        """Remove clips that overlap >50% with a higher-scored clip."""
+        """Remove clips that overlap >40% by IoU with a higher-scored clip."""
         clips_sorted = sorted(clips, key=lambda c: c.viral_score, reverse=True)
         result: List[ClipSuggestion] = []
         for clip in clips_sorted:
@@ -557,7 +564,11 @@ class AIBrainService:
                 overlap_start = max(clip.start_time, existing.start_time)
                 overlap_end = min(clip.end_time, existing.end_time)
                 if overlap_end > overlap_start:
-                    if (overlap_end - overlap_start) / clip_dur > 0.5:
+                    intersection = overlap_end - overlap_start
+                    union = max(clip.end_time, existing.end_time) - min(clip.start_time, existing.start_time)
+                    # IoU > 0.4 OR intersection covers >60% of the shorter clip
+                    shorter = min(clip_dur, existing.end_time - existing.start_time)
+                    if union > 0 and (intersection / union > 0.4 or intersection / shorter > 0.6):
                         duplicate = True
                         break
             if not duplicate:
@@ -626,8 +637,8 @@ Video duration: {total_duration:.1f} detik ({total_duration/60:.1f} menit)
 Language: {language}
 Word count: {word_count}
 {window_note}{context_block}{hype_block}
-INGAT: Setiap clip MINIMUM 15 detik. Pilih range yang mencakup konteks sebelum dan sesudah momen utama.
-Jangan pilih hanya 1 kalimat — itu terlalu pendek. Minimal 3-5 kalimat per clip.
+INGAT: Setiap clip MINIMUM 60 detik (YouTube Shorts requirement). Pilih range yang mencakup konteks sebelum dan sesudah momen utama.
+Jangan pilih hanya 1-2 kalimat — terlalu pendek. Minimal 5-8 kalimat per clip.
 
 TRANSCRIPT:
 {segments_text}
@@ -678,21 +689,28 @@ TRANSCRIPT:
                 "content": (
                     f"Generate 3 judul YouTube viral{game_ctx} dalam Bahasa Indonesia. "
                     "Style: emosional, curiosity gap, achievement. "
-                    "Return JSON array of strings ONLY.\n\n"
+                    "Return JSON object: {\"titles\": [\"judul1\", \"judul2\", \"judul3\"]}\n\n"
                     f"Clip info: {json.dumps(clip_info)}"
                 ),
             }
         ]
         try:
-            content, _, _, _ = await self._call_with_fallback(messages, max_tokens=300)
+            content, _, _, _ = await self._call_with_fallback(
+                messages, max_tokens=300, temperature=0.7
+            )
             content = content.strip()
             if content.startswith("```"):
                 content = content.split("```", 2)[1]
                 if content.startswith("json"):
                     content = content[4:]
                 content = content.rsplit("```", 1)[0].strip()
-            return json.loads(content)
-        except (json.JSONDecodeError, RuntimeError) as e:
+            data = json.loads(content)
+            # Accept both {"titles": [...]} and bare array
+            titles = data.get("titles", data) if isinstance(data, dict) else data
+            if isinstance(titles, list) and titles:
+                return titles[:3]
+            return [clip_info.get("title", "Untitled")]
+        except (json.JSONDecodeError, RuntimeError, AttributeError) as e:
             logger.warning(f"generate_titles failed: {e}")
             return [clip_info.get("title", "Untitled")]
 
