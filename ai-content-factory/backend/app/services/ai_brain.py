@@ -20,69 +20,69 @@ SHORTS_MAX_DURATION = 180  # seconds (YouTube Shorts official limit)
 # All values within SHORTS_MIN_DURATION..SHORTS_MAX_DURATION
 MOMENT_DURATION_RULES = {
     "clutch": {
-        "min": 60,
-        "ideal_min": 75,
-        "ideal_max": 120,
+        "min": 75,
+        "ideal_min": 105,
+        "ideal_max": 150,
         "max": 180,
-        "buildup": 15,
-        "resolution": 15,
+        "buildup": 25,
+        "resolution": 20,
     },
     "funny": {
         "min": 60,
-        "ideal_min": 60,
-        "ideal_max": 90,
-        "max": 150,
-        "buildup": 12,
-        "resolution": 12,
+        "ideal_min": 90,
+        "ideal_max": 130,
+        "max": 160,
+        "buildup": 20,
+        "resolution": 15,
     },
     "achievement": {
-        "min": 60,
-        "ideal_min": 90,
-        "ideal_max": 150,
+        "min": 75,
+        "ideal_min": 120,
+        "ideal_max": 165,
         "max": 180,
-        "buildup": 15,
-        "resolution": 15,
+        "buildup": 25,
+        "resolution": 20,
     },
     "rage": {
         "min": 60,
-        "ideal_min": 70,
-        "ideal_max": 110,
-        "max": 150,
-        "buildup": 12,
-        "resolution": 12,
+        "ideal_min": 90,
+        "ideal_max": 130,
+        "max": 160,
+        "buildup": 20,
+        "resolution": 15,
     },
     "epic": {
-        "min": 60,
-        "ideal_min": 90,
-        "ideal_max": 140,
+        "min": 75,
+        "ideal_min": 110,
+        "ideal_max": 155,
         "max": 180,
-        "buildup": 15,
-        "resolution": 15,
+        "buildup": 25,
+        "resolution": 20,
     },
     "fail": {
         "min": 60,
-        "ideal_min": 60,
-        "ideal_max": 90,
+        "ideal_min": 85,
+        "ideal_max": 120,
         "max": 150,
-        "buildup": 12,
-        "resolution": 12,
+        "buildup": 18,
+        "resolution": 15,
     },
     "tutorial": {
         "min": 60,
         "ideal_min": 90,
         "ideal_max": 150,
         "max": 180,
-        "buildup": 10,
+        "buildup": 12,
         "resolution": 12,
     },
 }
 FALLBACK_DURATION_RULE = {
-    "min": 60,
-    "ideal_min": 75,
-    "ideal_max": 120,
+    "min": 75,
+    "ideal_min": 100,
+    "ideal_max": 145,
     "max": 180,
-    "buildup": 12,
-    "resolution": 12,
+    "buildup": 20,
+    "resolution": 15,
 }
 
 
@@ -170,24 +170,28 @@ Viral scoring untuk gaming content (total 100 poin):
 ATURAN DURASI — TARGET 60-180 DETIK PER CLIP
 ═══════════════════════════════════════════════════════
 
-Target platform: YouTube Shorts (minimum 60 detik, maksimum 180 detik).
+Target platform: YouTube Shorts (YouTube per Okt 2024 mendukung Shorts hingga 3 menit / 180 detik).
 Setiap clip HARUS bisa berdiri sendiri sebagai Short yang utuh dan memuaskan.
+
+⚠️ PERHATIAN COPYRIGHT (penting untuk BF6/gaming):
+- Clip ≤ 60 detik: risiko copyright lebih kecil meskipun ada musik game
+- Clip 60-180 detik: aman selama tidak ada musik berhak cipta aktif (gameplay sound effects OK)
+- Pipeline sudah punya ACRCloud pre-screening — pilih range yang paling impactful, jangan diperpanjang sia-sia
 
 CARA MENENTUKAN DURASI YANG BENAR:
 Sebuah viral moment terdiri dari 3 bagian — SEMUANYA harus masuk:
-  1. BUILDUP (10-25 detik): konteks sebelum momen, tension, atau setup
+  1. BUILDUP (15-30 detik): konteks sebelum momen, tension, atau setup — HARUS CUKUP agar hook 4 detik pertama bermakna
   2. PEAK (5-30 detik): momen inti yang viral (kill, reaksi, fail, dll)
   3. AFTERMATH (10-25 detik): reaksi streamer setelah momen selesai
 
-Contoh benar:
-  - Momen kill streak hanya 8 detik → start 15 detik SEBELUMNYA (saat streamer mulai engage), end 20 detik SETELAHNYA (reaksi selesai) → total ~43 detik minimum
-  - Rage moment 5 detik → mulai saat situasi frustasi dimulai, akhiri saat streamer selesai bereaksi → total 60-90 detik
+Penting: sistem editing akan PREVIEW 4 detik dari PEAK di awal video (hook-first formula).
+Karena itu buildup harus cukup panjang agar penonton mengerti konteks saat "diputar ulang" dari awal.
 
-TARGET DURASI PER MOMENT TYPE:
-- clutch/epic: 75-120 detik (butuh buildup tension yang cukup)
-- funny/rage/fail: 60-90 detik (reaksi + aftermath)
-- achievement: 90-150 detik (perjuangan + pencapaian + selebrasi)
-- tutorial: 60-90 detik (tips singkat dan padat — tutorial panjang tidak viral di Shorts)
+TARGET DURASI PER MOMENT TYPE (target TENGAH range, bukan batas bawah):
+- clutch/epic: 110-150 detik — buildup tension panjang + aftermath reaksi lengkap
+- funny/rage/fail: 90-130 detik — setup situasi + reaksi + aftermath
+- achievement: 120-165 detik — perjuangan → pencapaian → selebrasi panjang
+- tutorial: 90-150 detik — tips singkat dan padat
 
 ATURAN KERAS:
 ❌ DILARANG keras output clip < 45 detik — tidak akan pernah layak jadi Short
@@ -200,6 +204,14 @@ ATURAN KERAS:
 ✅ Cari kata/kalimat di transcript yang menandai AWAL tension: "nah ini...", "waduh...", "siap...", "ayo...", "eh ada", dll
 ✅ Akhiri 10-20 detik SETELAH momen inti (reaksi selesai + natural pause)
 ✅ Jika durasi di bawah 60 detik, WAJIB tambah buildup dan aftermath lebih banyak
+
+DURASI LEBIH PANJANG DIUTAMAKAN JIKA:
+→ Ada sequence multi-kill/multi-event (kill 1 → kill 2 → kill 3 → ace): panjangkan sampai seluruh arc selesai
+→ Round atau match bisa diceritakan dari awal hingga akhir (attack → defend → menang/kalah): ambil seluruh arc
+→ Streamer terus bereaksi/ngomong setelah peak (rage berlanjut, selebrasi panjang): jangan potong di sini
+→ Ada tension bertahap yang terus naik sebelum peak: ambil dari awal tension naik
+✅ Clips 120-180 detik LEBIH BAIK daripada 90 detik jika kontennya mendukung
+✅ Jangan cap di 90 detik hanya karena terasa "cukup" — tanya diri: "apakah masih ada yang menarik setelah ini?"
 
 ═══════════════════════════════════════════════════════
 GAMING EVENTS YANG WAJIB JADI CLIP (jangan pernah skip)

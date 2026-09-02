@@ -859,6 +859,34 @@ async def _stage_video_processing(video, db):
                 )
                 logger.info(f"[Pipeline] Cut+crop done for clip {clip.id}")
 
+            # Burn captions from transcript (Montserrat Bold, y=h*0.74)
+            cap_path = os.path.join(clips_dir, f"{clip.id}_captioned.mp4")
+            hook_dur = 4.0 if (clip.peak_time and (clip.peak_time - clip.start_time) >= 8) else 0.0
+            try:
+                # Load transcript segments from stored video data
+                from app.services.transcription import TranscriptSegment as _TS
+                cap_segments = [
+                    {"start": s["start"], "end": s["end"], "text": s.get("text", "")}
+                    for s in (video.transcript_segments or [])
+                ]
+                captioned = await processor.burn_captions(
+                    input_path=vertical_path,
+                    output_path=cap_path,
+                    segments=cap_segments,
+                    clip_start=clip.start_time,
+                    hook_duration=hook_dur,
+                    peak_time=clip.peak_time if hook_dur > 0 else None,
+                )
+                if captioned == cap_path and os.path.exists(cap_path):
+                    os.replace(cap_path, vertical_path)
+                    logger.info(f"[Pipeline] Captions burned for clip {clip.id}")
+            except Exception as e:
+                logger.warning(f"[Pipeline] Caption burn failed (non-fatal): {e}")
+                try:
+                    os.remove(cap_path)
+                except OSError:
+                    pass
+
             # QC check on the vertical output
             qc_result = await processor.run_qc_check(vertical_path)
             # Also run moment-type duration check via qc_service

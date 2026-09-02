@@ -3,10 +3,15 @@
 import asyncio
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from loguru import logger
+
+# Montserrat Bold bundled in assets — available via ./backend:/app volume mount
+_FONT_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts", "Montserrat-Bold.ttf")
+_FONT_PATH = os.path.normpath(_FONT_PATH)
 
 
 @dataclass
@@ -183,7 +188,7 @@ class VideoProcessorService:
         start_time: float,
         end_time: float,
         peak_time: float,
-        hook_duration: float = 2.0,
+        hook_duration: float = 4.0,
     ) -> str:
         """Non-linear hook-first edit: show peak preview → rewind → build → payoff.
 
@@ -854,6 +859,102 @@ class VideoProcessorService:
         await self._run_ffmpeg(cmd)
         return output_path
 
+    async def burn_captions(
+        self,
+        input_path: str,
+        output_path: str,
+        segments: list,
+        clip_start: float = 0.0,
+        hook_duration: float = 0.0,
+        peak_time: Optional[float] = None,
+    ) -> str:
+        """Burn Montserrat Bold captions from transcript segments into the video.
+
+        Handles timestamp remapping for hook-first edited clips:
+          output[0 → hook_dur]           = source[peak_time → peak_time+hook_dur]
+          output[hook_dur → hook_dur+build] = source[clip_start → peak_time]
+          output[hook_dur+build → end]    = source[peak_time → clip_end]
+        """
+        if not os.path.exists(_FONT_PATH):
+            logger.warning(f"[Caption] Font not found at {_FONT_PATH}, skipping captions")
+            return input_path
+
+        # Build subtitle SRT with remapped timestamps
+        srt_lines = []
+        idx = 1
+        for seg in segments:
+            src_start = seg.get("start", 0.0)
+            src_end = seg.get("end", src_start + 1.0)
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+
+            # Remap source timestamp → output timestamp
+            out_start = _remap_timestamp(src_start, clip_start, peak_time, hook_duration)
+            out_end = _remap_timestamp(src_end, clip_start, peak_time, hook_duration)
+            if out_start is None or out_end is None or out_start >= out_end:
+                continue
+
+            srt_lines.append(f"{idx}")
+            srt_lines.append(f"{_fmt_srt(out_start)} --> {_fmt_srt(out_end)}")
+            # Break long lines at ~28 chars
+            srt_lines.append(_wrap_caption(text))
+            srt_lines.append("")
+            idx += 1
+
+        if not srt_lines:
+            logger.info("[Caption] No subtitle segments to burn, skipping")
+            return input_path
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".srt", delete=False, encoding="utf-8") as f:
+            f.write("\n".join(srt_lines))
+            srt_path = f.name
+
+        try:
+            # Use drawtext instead of subtitles filter — works without libass
+            # y=h*0.74: in gameplay zone, above stream overlay and YouTube UI
+            if not srt_lines:
+                return input_path
+            # Build drawtext filter chain from segments directly (more reliable than SRT)
+            dt_filters = []
+            for seg in segments:
+                src_start = seg.get("start", 0.0)
+                src_end = seg.get("end", src_start + 1.0)
+                text = seg.get("text", "").strip()
+                if not text:
+                    continue
+                out_start = _remap_timestamp(src_start, clip_start, peak_time, hook_duration)
+                out_end = _remap_timestamp(src_end, clip_start, peak_time, hook_duration)
+                if out_start is None or out_end is None or out_start >= out_end:
+                    continue
+                # Escape special chars for drawtext
+                safe_text = _wrap_caption(text).replace("'", "\\'").replace(":", "\\:")
+                dt_filters.append(
+                    f"drawtext=fontfile={_FONT_PATH}:text='{safe_text}'"
+                    f":fontsize=52:fontcolor=white:borderw=3:bordercolor=black"
+                    f":box=1:boxcolor=black@0.5:boxborderw=8"
+                    f":x=(w-text_w)/2:y=h*0.74"
+                    f":enable='between(t,{out_start:.2f},{out_end:.2f})'"
+                )
+            if not dt_filters:
+                return input_path
+            vf = ",".join(dt_filters)
+            cmd = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-vf", vf,
+                "-c:v", "libx264", "-crf", "22", "-preset", "fast",
+                "-c:a", "copy", "-movflags", "+faststart",
+                output_path,
+            ]
+            await self._run_ffmpeg(cmd)
+            logger.info(f"[Caption] Burned {len(dt_filters)} subtitle entries")
+            return output_path
+        finally:
+            try:
+                os.remove(srt_path)
+            except OSError:
+                pass
+
     async def _run_ffmpeg(self, cmd: List[str]) -> bytes:
         """Run FFmpeg subprocess with timeout and error handling."""
         proc = await asyncio.create_subprocess_exec(
@@ -882,3 +983,55 @@ def _seconds_to_srt(seconds: float) -> str:
     s = int(seconds % 60)
     ms = int((seconds % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _fmt_srt(t: float) -> str:
+    return _seconds_to_srt(max(0.0, t))
+
+
+def _remap_timestamp(
+    src_t: float,
+    clip_start: float,
+    peak_time: Optional[float],
+    hook_dur: float,
+) -> Optional[float]:
+    """Map source video timestamp to hook-first output timestamp.
+
+    For linear clips (no peak_time): output = src_t - clip_start
+    For hook-first clips:
+      source[peak → peak+hook_dur] → output[0 → hook_dur]
+      source[clip_start → peak]    → output[hook_dur → hook_dur+build]
+      source[peak → clip_end]      → output[hook_dur+build → end]
+    """
+    if peak_time is None or hook_dur == 0:
+        return src_t - clip_start
+
+    build_dur = peak_time - clip_start
+    # Hook segment: peak_time → peak_time + hook_dur
+    if peak_time <= src_t <= peak_time + hook_dur:
+        return src_t - peak_time
+    # Build segment: clip_start → peak_time
+    if clip_start <= src_t < peak_time:
+        return hook_dur + (src_t - clip_start)
+    # Payoff segment: peak_time → end
+    if src_t >= peak_time:
+        return hook_dur + build_dur + (src_t - peak_time)
+    return None
+
+
+def _wrap_caption(text: str, max_chars: int = 28) -> str:
+    """Wrap caption text at word boundary, max 2 lines."""
+    words = text.split()
+    lines, current = [], ""
+    for word in words:
+        if len(current) + len(word) + 1 <= max_chars:
+            current = f"{current} {word}".strip()
+        else:
+            if current:
+                lines.append(current)
+            current = word
+        if len(lines) >= 2:
+            break
+    if current and len(lines) < 2:
+        lines.append(current)
+    return "\n".join(lines)
