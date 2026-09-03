@@ -29,6 +29,12 @@ RUN pip install --no-cache-dir torch==2.5.1+cu124 torchaudio==2.5.1+cu124 \
     --index-url https://download.pytorch.org/whl/cu124 || \
     pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
+# Compatibility shim: torchvision.transforms.functional_tensor removed in 0.15+, needed by basicsr
+RUN python3 -c "\
+import torchvision, os; \
+p = os.path.join(os.path.dirname(torchvision.__file__), 'transforms', 'functional_tensor.py'); \
+open(p, 'w').write('from torchvision.transforms.functional import rgb_to_grayscale\nfrom torchvision.transforms.functional import *\n')"
+
 COPY . .
 
 EXPOSE 8000
