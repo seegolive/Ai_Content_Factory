@@ -143,10 +143,22 @@ export const clipsApi = {
    *  Pass the token from getStreamToken() so the browser <video> element
    *  can authenticate without sending an Authorization header.
    *  Pass format='vertical' to stream the 9:16 version. */
-  streamUrl: (clipId: string, token: string, format?: "vertical") => {
+  streamUrl: (clipId: string, token: string, format?: "vertical" | "enhanced") => {
     const base = `${BASE_URL}/api/v1/clips/${clipId}/stream?token=${encodeURIComponent(token)}`;
     return format ? `${base}&format=${format}` : base;
   },
+
+  triggerEnhance: (clipId: string) =>
+    api.post<{ status: string; clip_id: string }>(`/clips/${clipId}/enhance`),
+
+  getEnhanceStatus: (clipId: string) =>
+    api.get<{
+      clip_id: string;
+      enhanced_status: string | null;
+      enhanced_progress: number;
+      enhanced_path: string | null;
+      enhanced_at: string | null;
+    }>(`/clips/${clipId}/enhance/status`),
 
   stats: () =>
     api.get<{ total: number; pending: number; approved: number; rejected: number; published: number }>("/clips/stats"),

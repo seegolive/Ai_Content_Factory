@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import {
   CheckCircle, XCircle, Play, Pause, TrendingUp, AlertTriangle,
   Edit2, Check, ChevronDown, Filter, Clock, Hash,
-  SkipForward, SkipBack, Upload,
+  SkipForward, SkipBack, Upload, Sparkles,
 } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { useVideos, useClips, useReviewClip, useUpdateClip } from "@/lib/queries";
@@ -272,6 +272,45 @@ export default function ReviewPage() {
     } catch { toast.error("Action failed"); }
     finally { setReviewing(false); }
   }, [activeClip, reviewing, reviewClip, sortedFilteredClips, setReviewActiveClip]);
+
+  const handleApproveAndPublish = useCallback(async () => {
+    if (!activeClip || reviewing) return;
+
+  // ── Enhancement ──────────────────────────────────────────────────────────
+  const [enhancing, setEnhancing] = useState(false);
+  const enhancePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const handleEnhance = useCallback(async () => {
+    if (!activeClip || enhancing) return;
+    if (activeClip.enhanced_status === "processing") return;
+    setEnhancing(true);
+    try {
+      await clipsApi.triggerEnhance(activeClip.id);
+      toast.success("Enhancement queued — takes ~2-3 min");
+      // Start polling every 3s
+      enhancePollRef.current = setInterval(async () => {
+        try {
+          const res = await clipsApi.getEnhanceStatus(activeClip.id);
+          if (res.data.enhanced_status === "completed") {
+            clearInterval(enhancePollRef.current!);
+            setEnhancing(false);
+            toast.success("✨ Enhanced to 1440p!");
+          } else if (res.data.enhanced_status === "failed") {
+            clearInterval(enhancePollRef.current!);
+            setEnhancing(false);
+            toast.error("Enhancement failed");
+          }
+        } catch { /* ignore poll errors */ }
+      }, 3000);
+    } catch {
+      setEnhancing(false);
+      toast.error("Could not start enhancement");
+    }
+  }, [activeClip, enhancing]);
+
+  // Clear poll on unmount or clip change
+  useEffect(() => () => { if (enhancePollRef.current) clearInterval(enhancePollRef.current); }, []);
+  useEffect(() => { setEnhancing(activeClip?.enhanced_status === "processing"); }, [activeClip?.id]);
 
   const handleApproveAndPublish = useCallback(async () => {
     if (!activeClip || reviewing) return;
@@ -694,6 +733,19 @@ export default function ReviewPage() {
               ) : (
                 <>
                   <div className="review-controls-buttons">
+                    <button
+                      onClick={handleEnhance}
+                      className="review-btn-enhance"
+                      disabled={enhancing || activeClip?.enhanced_status === "completed"}
+                      title={activeClip?.enhanced_status === "completed" ? "Already enhanced" : "Enhance to 1440p"}
+                    >
+                      <Sparkles size={13} />
+                      {enhancing
+                        ? `${activeClip?.enhanced_progress ?? 0}%`
+                        : activeClip?.enhanced_status === "completed"
+                        ? "Enhanced ✓"
+                        : "Enhance"}
+                    </button>
                     <button
                       onClick={handleApproveAndPublish}
                       className="review-btn-approve-publish"

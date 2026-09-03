@@ -16,6 +16,7 @@ celery_app = Celery(
         "app.workers.tasks.process_video",
         "app.workers.tasks.distribute",
         "app.workers.tasks.analytics",
+        "app.workers.tasks.enhancement_task",
     ],
 )
 
@@ -34,6 +35,7 @@ celery_app.conf.update(
         "app.workers.tasks.pipeline.*": {"queue": "pipeline"},
         "app.workers.tasks.distribute.*": {"queue": "distribute"},
         "app.workers.tasks.analytics.*": {"queue": "analytics"},
+        "app.workers.tasks.enhancement_task.*": {"queue": "enhancement"},
     },
     beat_schedule={
         # 06:00 WIB = 23:00 UTC

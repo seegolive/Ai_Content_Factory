@@ -33,6 +33,11 @@ class ClipOut(BaseModel):
     platform_status: dict = {}
     publish_settings: dict = {}
     ai_provider_used: Optional[str] = None
+    # Enhancement fields
+    enhanced_path: Optional[str] = None
+    enhanced_status: Optional[str] = None
+    enhanced_progress: Optional[int] = 0
+    enhanced_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

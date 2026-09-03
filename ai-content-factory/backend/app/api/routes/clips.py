@@ -375,6 +375,12 @@ async def stream_clip(
 
     # Resolve which file to serve based on format param
     if (
+        format == "enhanced"
+        and clip.enhanced_path
+        and os.path.exists(clip.enhanced_path)
+    ):
+        file_path = clip.enhanced_path
+    elif (
         format == "vertical"
         and clip.clip_path_vertical
         and os.path.exists(clip.clip_path_vertical)
@@ -426,3 +432,58 @@ async def stream_clip(
             "Accept-Ranges": "bytes",
         },
     )
+
+
+@router.post("/clips/{clip_id}/enhance", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_enhance(
+    clip_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Queue Real-ESRGAN 2× enhancement to 1440p for a clip."""
+    result = await db.execute(
+        select(Clip).where(Clip.id == clip_id, Clip.user_id == current_user.id)
+    )
+    clip = result.scalar_one_or_none()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    if not clip.clip_path:
+        raise HTTPException(status_code=400, detail="Clip has no source file yet")
+    if clip.enhanced_status == "processing":
+        return {"status": "already_processing", "progress": clip.enhanced_progress}
+    if clip.enhanced_status == "completed":
+        return {"status": "already_completed", "enhanced_path": clip.enhanced_path}
+
+    clip.enhanced_status = "pending"
+    clip.enhanced_progress = 0
+    clip.enhanced_path = None
+    await db.commit()
+
+    from app.workers.tasks.enhancement_task import enhance_clip
+    enhance_clip.delay(str(clip_id))
+
+    return {"status": "queued", "clip_id": str(clip_id)}
+
+
+@router.get("/clips/{clip_id}/enhance/status")
+async def get_enhance_status(
+    clip_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll enhancement job status."""
+    result = await db.execute(
+        select(Clip).where(Clip.id == clip_id, Clip.user_id == current_user.id)
+    )
+    clip = result.scalar_one_or_none()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    return {
+        "clip_id": str(clip_id),
+        "enhanced_status": clip.enhanced_status,
+        "enhanced_progress": clip.enhanced_progress or 0,
+        "enhanced_path": clip.enhanced_path,
+        "enhanced_at": clip.enhanced_at,
+    }
+

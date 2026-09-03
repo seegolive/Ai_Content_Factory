@@ -72,6 +72,11 @@ class Clip(Base):
         JSONB, default=dict, nullable=False, server_default="{}"
     )
     speaker_id: Mapped[str] = mapped_column(String(100), nullable=True)
+    # Enhancement (on-demand Real-ESRGAN 2× → 1440p)
+    enhanced_path: Mapped[str] = mapped_column(Text, nullable=True)
+    enhanced_status: Mapped[str] = mapped_column(String(20), nullable=True)
+    enhanced_progress: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    enhanced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
