@@ -468,8 +468,8 @@ class AIBrainService:
         max_tokens: int,
     ) -> dict:
         """Call a single provider. Raises on any error."""
-        # Ollama local needs more time for large models; cloud providers are faster
-        timeout = 300.0 if provider["base_url"].startswith("http://host.docker") else 120.0
+        # Ollama (local) needs more time for large models; match by name, not URL
+        timeout = 300.0 if "ollama" in provider["name"].lower() else 120.0
         async with httpx.AsyncClient(
             base_url=provider["base_url"],
             headers={
@@ -722,58 +722,6 @@ class AIBrainService:
             )))
 
         return clips
-
-    def _build_hype_candidate_windows(
-        self,
-        segments: list,
-        hype_markers: list,
-        total_duration: float,
-        cluster_gap: float = 180.0,
-        context_before: float = 45.0,
-        context_after: float = 60.0,
-        max_windows: int = 20,
-    ) -> List[Tuple[list, float, float]]:
-        """Build focused windows around clustered audio hype peaks.
-
-        Groups nearby peaks (within cluster_gap) into clusters, then creates
-        a context window around each cluster. Falls back to regular windows
-        if too many clusters are produced.
-        """
-        if not hype_markers:
-            return self._build_windows(segments, total_duration)
-
-        sorted_markers = sorted(hype_markers, key=lambda m: m["start"])
-        clusters: list = [[sorted_markers[0]]]
-        for marker in sorted_markers[1:]:
-            if marker["start"] - clusters[-1][-1]["end"] < cluster_gap:
-                clusters[-1].append(marker)
-            else:
-                clusters.append([marker])
-
-        if len(clusters) > max_windows:
-            logger.info(
-                f"[AI] {len(clusters)} hype clusters > {max_windows} — using regular windows"
-            )
-            return self._build_windows(segments, total_duration)
-
-        windows = []
-        for cluster in clusters:
-            win_start = max(0.0, cluster[0]["start"] - context_before)
-            win_end = min(total_duration, cluster[-1]["end"] + context_after)
-            # Merge with previous window if overlapping
-            if windows and win_start <= windows[-1][2]:
-                prev_segs, prev_start, prev_end = windows[-1]
-                win_end = max(win_end, prev_end)
-                win_start = prev_start
-                windows.pop()
-            window_segs = [s for s in segments if win_start <= s.start < win_end]
-            if window_segs:
-                windows.append((window_segs, win_start, win_end))
-
-        logger.info(
-            f"[AI] Candidate windows: {len(clusters)} clusters → {len(windows)} merged windows"
-        )
-        return windows
 
     def _detect_candidates(
         self,
@@ -1169,6 +1117,8 @@ TRANSCRIPT:
             })
             content, provider_name, model_used, tokens_used = \
                 await self._call_with_fallback(messages, max_tokens=max_tokens)
+            # Recompute offset — retry may have used a different provider
+            score_offset = _PROVIDER_SCORE_OFFSETS.get(provider_name, 0)
             clips_data = self._try_parse_clips(content)
 
         raw = clips_data or {}
