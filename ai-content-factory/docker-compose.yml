@@ -127,7 +127,7 @@ services:
       - APP_ENV=${APP_ENV:-development}
       - PATH=/root/.deno/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/sbin:/bin
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q celery,pipeline,analytics
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q celery,pipeline,analytics,enhancement
     depends_on:
       - postgres
       - redis

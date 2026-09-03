@@ -24,16 +24,21 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install PyTorch with CUDA (adjust version for your CUDA)
-RUN pip install --no-cache-dir torch==2.5.1+cu124 torchaudio==2.5.1+cu124 \
-    --index-url https://download.pytorch.org/whl/cu124 || \
-    pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch CUDA before realesrgan/basicsr to prevent CPU torch override
+RUN pip install --no-cache-dir \
+    torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 \
+    --index-url https://download.pytorch.org/whl/cu124 \
+    || pip install --no-cache-dir torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cpu
 
-# Compatibility shim: torchvision.transforms.functional_tensor removed in 0.15+, needed by basicsr
+# Install realesrgan/basicsr after CUDA torch — --no-deps prevents CPU torch override
+RUN pip install --no-cache-dir realesrgan basicsr facexlib gfpgan --no-deps
+
+# Compatibility shim: torchvision.transforms.functional_tensor removed in 0.15+
 RUN python3 -c "\
 import torchvision, os; \
 p = os.path.join(os.path.dirname(torchvision.__file__), 'transforms', 'functional_tensor.py'); \
-open(p, 'w').write('from torchvision.transforms.functional import rgb_to_grayscale\nfrom torchvision.transforms.functional import *\n')"
+open(p, 'w').write('from torchvision.transforms.functional import *\n')"
 
 COPY . .
 
