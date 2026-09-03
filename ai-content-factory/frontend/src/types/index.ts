@@ -100,6 +100,10 @@ export interface Clip {
     category?: string;
   };
   ai_provider_used?: string;
+  enhanced_path?: string | null;
+  enhanced_status?: string | null;
+  enhanced_progress?: number;
+  enhanced_at?: string | null;
   created_at: string;
 }
 
