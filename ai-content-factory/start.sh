@@ -44,19 +44,22 @@ check_status() {
 start_services() {
   local rebuild=$1
   echo -e "${CYAN}Menjalankan semua service...${RESET}"
+  # Frontend runs outside Docker — kill stale process then restart
+  pkill -f "next dev" 2>/dev/null || true
   if [[ "$rebuild" == "rebuild" ]]; then
-    echo -e "${YELLOW}Rebuilding frontend image...${RESET}"
-    docker compose build frontend
+    echo -e "${YELLOW}Installing frontend dependencies...${RESET}"
+    (cd "$SCRIPT_DIR/frontend" && npm install --silent)
   fi
-  docker compose up -d
-  echo ""
+  docker compose up -d --remove-orphans
+  # Start Next.js in background, log to /tmp/frontend.log
+  (cd "$SCRIPT_DIR/frontend" && npm run dev > /tmp/frontend.log 2>&1) &
   echo -e "${GREEN}✓ Semua service berjalan!${RESET}"
   echo ""
-  sleep 2
+  sleep 3
   check_status
   echo ""
   echo -e "${BOLD}URL:${RESET}"
-  echo -e "  Frontend  → ${CYAN}http://localhost:3000${RESET}"
+  echo -e "  Frontend  → ${CYAN}http://localhost:3000${RESET}  (log: /tmp/frontend.log)"
   echo -e "  Backend   → ${CYAN}http://localhost:8000${RESET}"
   echo -e "  API Docs  → ${CYAN}http://localhost:8000/docs${RESET}"
   echo -e "  Flower    → ${CYAN}http://localhost:5555${RESET}"
