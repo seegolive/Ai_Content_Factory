@@ -385,21 +385,35 @@ async def _download_youtube_video(video, db):
     loop = asyncio.get_running_loop()
 
     def _do_download():
-        # Try visionos+web first (bypasses SABR/PO Token for most videos).
-        # Some live stream recordings don't support these clients → fallback to default.
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        def _attempt(opts):
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 return ydl.extract_info(video.original_url, download=True)
+
+        # Attempt 1: requested quality with multi-client chain
+        try:
+            return _attempt(ydl_opts)
         except yt_dlp.utils.DownloadError as e:
-            if "format is not available" in str(e) or "Requested format" in str(e):
-                logger.warning(
-                    f"[Pipeline] Primary client format unavailable — retrying with tv_embedded only"
-                )
-                fallback_opts = {**ydl_opts}
-                fallback_opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded"]}}
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
-                    return ydl2.extract_info(video.original_url, download=True)
-            raise
+            err = str(e)
+            if "format is not available" not in err and "403" not in err and "Forbidden" not in err:
+                raise  # unrelated error, re-raise immediately
+
+        # Attempt 2: step down to 1080p (avoids SABR-locked 1440p/4K DASH streams)
+        logger.warning("[Pipeline] Download failed (format/403) — retrying at 1080p with tv_embedded")
+        opts2 = {**ydl_opts,
+                 "format": "bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
+                 "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}
+        try:
+            return _attempt(opts2)
+        except yt_dlp.utils.DownloadError as e:
+            if "403" not in str(e) and "Forbidden" not in str(e) and "format is not available" not in str(e):
+                raise
+
+        # Attempt 3: last resort — best single combined stream (no merge needed, no SABR)
+        logger.warning("[Pipeline] Still failing — last resort: best single stream")
+        opts3 = {**ydl_opts,
+                 "format": "best[ext=mp4]/best",
+                 "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}
+        return _attempt(opts3)
 
     info = await loop.run_in_executor(None, _do_download)
 
