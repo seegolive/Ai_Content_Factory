@@ -1520,6 +1520,30 @@ input, textarea, select { font-family: inherit; }
   gap: 16px;
   padding-top: 2px;
 }
+.review-btn-enhance {
+  height: 38px; border-radius: 8px; cursor: pointer;
+  background: rgba(167,139,250,0.12); color: #a78bfa;
+  border: 1px solid rgba(167,139,250,0.35);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 0 14px; white-space: nowrap;
+  transition: all 0.15s; font-family: var(--font-sans);
+  position: relative; overflow: hidden;
+}
+.review-btn-enhance:hover:not(:disabled) {
+  background: rgba(167,139,250,0.22);
+  border-color: rgba(167,139,250,0.6);
+  box-shadow: 0 0 12px rgba(167,139,250,0.25);
+}
+.review-btn-enhance:disabled { opacity: 0.55; cursor: not-allowed; }
+.review-btn-enhance.done {
+  background: rgba(0,229,160,0.08); color: #00e5a0;
+  border-color: rgba(0,229,160,0.3); cursor: default;
+}
+@keyframes rq-enhance-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 .review-btn-approve {
   flex: 1; min-width: 0; height: 38px; border-radius: 8px; border: none; cursor: pointer;
   background: #00e5a0; color: #000;

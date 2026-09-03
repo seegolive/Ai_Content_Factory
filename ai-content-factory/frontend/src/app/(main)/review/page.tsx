@@ -730,11 +730,11 @@ export default function ReviewPage() {
                   <div className="review-controls-buttons">
                     <button
                       onClick={handleEnhance}
-                      className="review-btn-enhance"
+                      className={`review-btn-enhance${enhancing ? " enhancing" : activeClip?.enhanced_status === "completed" ? " done" : ""}`}
                       disabled={enhancing || activeClip?.enhanced_status === "completed"}
-                      title={activeClip?.enhanced_status === "completed" ? "Already enhanced" : "Enhance to 1440p"}
+                      title={activeClip?.enhanced_status === "completed" ? "Already enhanced to 1440p" : "Enhance to 1440p with Real-ESRGAN"}
                     >
-                      <Sparkles size={13} />
+                      <Sparkles size={12} />
                       {enhancing
                         ? `${activeClip?.enhanced_progress ?? 0}%`
                         : activeClip?.enhanced_status === "completed"
