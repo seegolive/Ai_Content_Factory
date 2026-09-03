@@ -20,6 +20,9 @@ ENV PATH="/root/.deno/bin:${PATH}"
 
 WORKDIR /app
 
+# Expose CUDA libraries bundled with torch so ctranslate2/faster-whisper can find them
+ENV LD_LIBRARY_PATH="/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:${LD_LIBRARY_PATH}"
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
