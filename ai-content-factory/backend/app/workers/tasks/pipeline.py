@@ -883,7 +883,12 @@ async def _stage_video_processing(video, db):
             clip.clip_path_vertical = vertical_path
             clip.qc_status = "passed" if passed else "failed"
             clip.qc_issues = [
-                {"type": i.type, "description": i.description, "severity": i.severity}
+                {
+                    "type": i.type,
+                    "description": i.description,
+                    "severity": i.severity,
+                    "recommendation": i.recommendation,
+                }
                 for i in combined_issues
             ]
 

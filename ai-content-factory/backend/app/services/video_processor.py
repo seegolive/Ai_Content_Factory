@@ -19,6 +19,7 @@ class QCIssue:
     type: str
     description: str
     severity: str = "warning"  # warning | error
+    recommendation: str = ""   # action hint for pipeline self-repair
 
 
 @dataclass
