@@ -385,9 +385,21 @@ async def _download_youtube_video(video, db):
     loop = asyncio.get_running_loop()
 
     def _do_download():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video.original_url, download=True)
-            return info
+        # Try visionos+web first (bypasses SABR/PO Token for most videos).
+        # Some live stream recordings don't support these clients → fallback to default.
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(video.original_url, download=True)
+        except yt_dlp.utils.DownloadError as e:
+            if "format is not available" in str(e) or "Requested format" in str(e):
+                logger.warning(
+                    f"[Pipeline] visionos client format unavailable — retrying with default client"
+                )
+                fallback_opts = {**ydl_opts}
+                fallback_opts.pop("extractor_args", None)  # use yt-dlp default client
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
+                    return ydl2.extract_info(video.original_url, download=True)
+            raise
 
     info = await loop.run_in_executor(None, _do_download)
 
