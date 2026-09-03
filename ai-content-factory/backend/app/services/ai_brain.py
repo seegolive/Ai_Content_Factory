@@ -384,8 +384,8 @@ Output HANYA JSON valid. TIDAK ADA teks di luar JSON. Schema:
   "summary": "Ringkasan singkat video/stream ini"
 }
 
-Identifikasi 15-25 momen — lebih banyak lebih baik, pipeline yang akan filter.
-Minimum viral_score untuk diinclude: 40. Lebih baik 20 clip skor 40-80 daripada 5 clip skor 80+.
+Identifikasi 8-12 momen TERBAIK saja — kualitas jauh lebih penting dari kuantitas.
+Minimum viral_score untuk diinclude: 65. Lebih baik 8 clip skor 65-95 daripada 25 clip campuran.
 Urutkan clips dari viral_score tertinggi ke terendah."""
 
 # Self-label phrases that signal the streamer knows the moment is good
@@ -398,8 +398,9 @@ _SELF_LABEL_PHRASES = [
 _DISCOVERY_EVAL_PROMPT = """Kamu adalah evaluator momen gaming. Tugasmu HANYA mengevaluasi kandidat yang sudah dideteksi sistem.
 JANGAN mencari momen baru — hanya nilai kandidat yang diberikan.
 
-PRINSIP UTAMA: Lebih baik loloskan momen yang ternyata biasa daripada LEWATKAN momen yang bagus.
-Jika ragu → tetap include (is_clip: true).
+PRINSIP UTAMA: Hanya loloskan clip yang LAYAK DIUPLOAD HARI INI.
+Bertanya pada diri: "Apakah orang asing yang tidak kenal channel ini akan menonton sampai habis?"
+Jika ragu → SKIP. Lebih baik 8 clip bagus daripada 20 clip campur.
 
 ATURAN KRITIS — KAPAN MEMULAI CLIP (universal untuk semua tipe momen):
 
@@ -415,9 +416,12 @@ Penonton harus merasakan JOURNEY, bukan hanya melihat hasil akhir.
 
 Tanya: "Kapan penonton perlu mulai nonton agar payoff-nya memuaskan?"
 Itulah start_time — bukan tepat sebelum puncak, tapi dari ASAL-MUASAL scene.
+Durasi tidak harus 3 menit — minimum 60 detik, sesuaikan dengan panjang alami arc-nya.
+Yang penting: arc terasa LENGKAP (setup → tension → payoff).
 
 PENTING: start_time harus dari AWAL SCENE/AKTIVITAS, bukan dari build-up dekat peak
-Context window yang diberikan SENGAJA PANJANG (3 menit) agar kamu bisa menemukan asal momen.
+Context window 3 menit diberikan agar bisa menemukan asal momen — tapi durasi clip TIDAK harus 3 menit.
+Minimum 60 detik, bisa lebih pendek dari 3 menit jika arc-nya sudah selesai. Yang penting arc terasa LENGKAP: setup → tension → payoff.
 
 Untuk setiap kandidat yang IS a good clip, tentukan:
 - start_time, end_time (dalam detik absolut dari awal video)
@@ -592,15 +596,18 @@ class AIBrainService:
                 logger.warning("[AI] Discovery found 0 clips, falling back to windowed")
                 windows = self._build_windows(transcript.segments, transcript.duration)
             else:
-                # Rescore + deduplicate + rank
+                # Rescore + deduplicate + quality gate + rank
                 all_clips = self._rescore_with_signals(
                     all_clips, transcript.segments, hype_markers or []
                 )
                 all_clips = self._deduplicate_clips(all_clips)
+                # Quality gate: min score 65, max 12 clips
+                all_clips = [c for c in all_clips if c.viral_score >= 65]
                 all_clips.sort(key=lambda c: c.viral_score, reverse=True)
+                all_clips = all_clips[:12]
                 logger.info(
-                    f"[AI] High-recall done: {len(all_clips)} clips "
-                    f"in {time.perf_counter()-t0:.1f}s"
+                    f"[AI] High-recall done: {len(all_clips)} quality clips "
+                    f"(score≥65) in {time.perf_counter()-t0:.1f}s"
                 )
                 return AIAnalysisResult(
                     clips=all_clips,
@@ -967,7 +974,7 @@ class AIBrainService:
         return windows
 
     def _deduplicate_clips(self, clips: List[ClipSuggestion]) -> List[ClipSuggestion]:
-        """Remove clips that overlap >40% by IoU with a higher-scored clip."""
+        """Remove clips that overlap >25% by IoU with a higher-scored clip."""
         clips_sorted = sorted(clips, key=lambda c: c.viral_score, reverse=True)
         result: List[ClipSuggestion] = []
         for clip in clips_sorted:
@@ -981,9 +988,9 @@ class AIBrainService:
                 if overlap_end > overlap_start:
                     intersection = overlap_end - overlap_start
                     union = max(clip.end_time, existing.end_time) - min(clip.start_time, existing.start_time)
-                    # IoU > 0.4 OR intersection covers >60% of the shorter clip
                     shorter = min(clip_dur, existing.end_time - existing.start_time)
-                    if union > 0 and (intersection / union > 0.4 or intersection / shorter > 0.6):
+                    # More aggressive: IoU > 0.25 OR covers >40% of shorter clip
+                    if union > 0 and (intersection / union > 0.25 or intersection / shorter > 0.40):
                         duplicate = True
                         break
             if not duplicate:
@@ -1305,7 +1312,7 @@ TRANSCRIPT:
                     if h and isinstance(h, str)
                 ]
 
-                # Clamp viral_score
+                # Clamp viral_score — minimum 40 at parse time, quality gate at 65 is applied later
                 score = max(0, min(100, int(item.get("viral_score", 50))))
 
                 duration = end - start
