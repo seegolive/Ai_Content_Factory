@@ -16,13 +16,15 @@ async def run_qc(
     clip_path: str,
     moment_type: Optional[str] = None,
     clip_duration: Optional[float] = None,
+    existing_result: Optional[QCResult] = None,
 ) -> QCResult:
     """Run QC on a clip with moment-type-aware duration validation.
 
-    ffprobe-measured duration is authoritative; clip_duration from caller is
-    only used when ffprobe data is unavailable (e.g. pre-cut validation).
+    Pass existing_result to reuse a previous run_qc_check() call and avoid a
+    second ffprobe. When provided, ffprobe-measured duration inside that result
+    is used as authoritative (clip_duration is ignored).
     """
-    result = await _processor.run_qc_check(clip_path)
+    result = existing_result if existing_result is not None else await _processor.run_qc_check(clip_path)
 
     if not moment_type:
         return result

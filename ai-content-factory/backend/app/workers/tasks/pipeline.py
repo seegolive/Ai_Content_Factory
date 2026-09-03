@@ -13,6 +13,7 @@ import json
 import os
 import statistics
 import subprocess
+import time
 import uuid
 from typing import Optional
 
@@ -206,7 +207,7 @@ async def _extract_audio_energy_peaks(file_path: str, video_id: str) -> list:
         )
         return result.stderr
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     stderr = await loop.run_in_executor(None, _run)
 
     # Parse: "t:  3.2 M: -18.5 S: ..." → (time_s, momentary_lufs)
@@ -320,13 +321,17 @@ async def _download_youtube_video(video, db):
     # Progress hook — writes download_progress (0-100) directly to DB via sync psycopg
     video_id_str = str(video.id)
 
+    _last_dl_update = [0.0]  # mutable closure for throttle
     def _progress_hook(d):
         if d.get("status") == "downloading":
+            now = time.time()
+            if now - _last_dl_update[0] < 2.0:
+                return
+            _last_dl_update[0] = now
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             downloaded = d.get("downloaded_bytes", 0)
             if total and total > 0:
                 pct = int(downloaded * 100 / total)
-                # Use a sync raw SQL UPDATE to avoid async event loop issues in executor thread
                 try:
                     import psycopg2
                     from app.core.config import settings
@@ -376,7 +381,7 @@ async def _download_youtube_video(video, db):
             "YouTube may block download. Export cookies from browser and save there."
         )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _do_download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -442,14 +447,17 @@ async def _stage_transcription(video, db):
     # so the frontend can show live progress rather than a stuck bar.
     video_id_str = str(video.id)
 
+    _last_tx_update = [0.0]  # mutable closure for throttle
     def _transcription_progress(whisper_pct: int):
-        """Called from transcription thread every ~2% — writes to DB via sync psycopg2."""
+        now = time.time()
+        if now - _last_tx_update[0] < 2.0:
+            return
+        _last_tx_update[0] = now
         try:
             import psycopg2
             from app.core.config import settings
             conn = psycopg2.connect(settings.DATABASE_URL_SYNC)
             cur = conn.cursor()
-            # Store whisper 0-100 in download_progress; frontend maps it to 15-35% pipeline bar
             cur.execute(
                 "UPDATE videos SET download_progress = %s WHERE id = %s",
                 (whisper_pct, video_id_str),
@@ -520,7 +528,21 @@ async def _stage_ai_analysis(video, db):
         except Exception:
             pass
 
-    analysis = await brain.analyze_transcript(transcript, hype_markers=hype_markers)
+    # Detect game for AI context (text-based; crop profile loading stays in Stage 5)
+    from app.services.game_detector import GameDetector as _GameDetector
+    _gd = _GameDetector()
+    _game_name = _gd.detect_from_title(video.title or "")
+    if _game_name == "_default" and video.transcript:
+        _game_name = _gd.detect_from_transcript(video.transcript)
+    game_title_for_ai = _game_name if _game_name != "_default" else ""
+    if game_title_for_ai:
+        logger.info(f"[Pipeline] AI context: game={game_title_for_ai}")
+
+    analysis = await brain.analyze_transcript(
+        transcript,
+        game_title=game_title_for_ai,
+        hype_markers=hype_markers,
+    )
 
     # Layer 2: Validate and adjust clips (extend/pass/split/reject)
     from app.workers.tasks.pipeline_validator import validate_and_adjust_clips
@@ -552,6 +574,11 @@ async def _stage_ai_analysis(video, db):
 
     # Store valid clip suggestions in DB
     from app.models.clip import Clip
+    from sqlalchemy import delete as sql_delete
+
+    # Idempotency: delete clips from any previous partial run before re-inserting
+    await db.execute(sql_delete(Clip).where(Clip.video_id == video.id))
+    await db.flush()
 
     for suggestion in valid_clips:
         clip = Clip(
@@ -583,9 +610,27 @@ async def _stage_ai_analysis(video, db):
     await db.commit()
 
 
+async def _sample_brightness(file_path: str, timestamp: float) -> float:
+    """Return mean grayscale brightness (0–255) for one frame. Returns 255 on error."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-ss", str(timestamp), "-i", file_path,
+            "-vframes", "1", "-vf", "scale=32:18,format=gray",
+            "-f", "rawvideo", "pipe:",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        return sum(stdout) / len(stdout) if stdout else 255.0
+    except Exception:
+        return 255.0  # assume non-black on error
+
+
 async def _stage_qc_filtering(video, db):
-    """Pre-cut QC: reject clips whose source frame is too dark (black screen / waiting screen)."""
-    import asyncio
+    """Pre-cut QC: reject clips that are mostly black (loading screens / waiting screens).
+
+    Samples 5 frames at 10/25/50/75/90% of clip duration in parallel.
+    Rejects if ≥60% of samples are dark (brightness < 20/255).
+    """
     from sqlalchemy import select
     from app.models.clip import Clip
 
@@ -594,28 +639,35 @@ async def _stage_qc_filtering(video, db):
     )
     clips = result.scalars().all()
 
+    _SAMPLE_PCTS = [0.10, 0.25, 0.50, 0.75, 0.90]
     rejected = 0
     if video.file_path and clips:
         for clip in clips:
             try:
-                # Sample one frame at clip midpoint and measure mean brightness (0–255)
-                midpoint = clip.start_time + (clip.end_time - clip.start_time) / 2
-                proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-ss", str(midpoint), "-i", video.file_path,
-                    "-vframes", "1", "-vf", "scale=32:18,format=gray",
-                    "-f", "rawvideo", "pipe:",
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                clip_dur = clip.end_time - clip.start_time
+                timestamps = [clip.start_time + clip_dur * p for p in _SAMPLE_PCTS]
+                brightnesses = await asyncio.gather(
+                    *[_sample_brightness(video.file_path, ts) for ts in timestamps]
                 )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-                if stdout:
-                    brightness = sum(stdout) / len(stdout)
-                    if brightness < 20:  # < 20/255 = mostly black
-                        clip.qc_status = "failed"
-                        clip.qc_issues = [{"type": "black_frame", "severity": "error",
-                                           "description": f"Source frame at {midpoint:.0f}s is black (brightness={brightness:.1f})",
-                                           "recommendation": "skip_or_shift_start"}]
-                        rejected += 1
-                        logger.debug(f"[QC] Rejected black clip {clip.id} at {midpoint:.0f}s (brightness={brightness:.1f})")
+                black_count = sum(1 for b in brightnesses if b < 20)
+                black_ratio = black_count / len(brightnesses)
+
+                if black_ratio >= 0.6:  # 3+ of 5 frames black → reject
+                    clip.qc_status = "failed"
+                    clip.qc_issues = [{
+                        "type": "black_frame", "severity": "error",
+                        "description": (
+                            f"Clip {clip.start_time:.0f}s is mostly black "
+                            f"({black_count}/{len(_SAMPLE_PCTS)} sampled frames, "
+                            f"min brightness={min(brightnesses):.1f})"
+                        ),
+                        "recommendation": "skip_or_shift_start",
+                    }]
+                    rejected += 1
+                    logger.debug(
+                        f"[QC] Rejected black clip {clip.id} "
+                        f"({black_count}/{len(_SAMPLE_PCTS)} black frames)"
+                    )
             except Exception as e:
                 logger.warning(f"[QC] Brightness check failed for clip {clip.id}: {e}")
 
@@ -645,6 +697,9 @@ async def _stage_video_processing(video, db):
     clips = result.scalars().all()
     if not clips:
         logger.info(f"[Pipeline] All clips already processed for video {video.id}, skipping cut stage")
+        video.checkpoint = "clips_done"
+        await db.commit()
+        return
 
     processor = VideoProcessorService()
     clips_dir = os.path.join("storage", "clips", str(video.id))
@@ -788,23 +843,15 @@ async def _stage_video_processing(video, db):
                 except OSError:
                     pass
 
-            # QC check on the vertical output
-            qc_result = await processor.run_qc_check(vertical_path)
-            # Also run moment-type duration check via qc_service
+            # Single ffprobe: pass base QCResult into run_qc to skip second probe
             from app.services.qc_service import run_qc as run_moment_qc
-
+            qc_base = await processor.run_qc_check(vertical_path)
             duration_qc = await run_moment_qc(
                 vertical_path,
                 moment_type=clip.moment_type,
-                clip_duration=clip.end_time - clip.start_time,
+                existing_result=qc_base,
             )
-            # Merge issues from both checks
-            combined_issues = qc_result.issues + [
-                i
-                for i in duration_qc.issues
-                if i.type not in {qi.type for qi in qc_result.issues}
-            ]
-            passed = qc_result.passed and duration_qc.passed
+            passed = duration_qc.passed
             clip.clip_path = vertical_path
             clip.clip_path_vertical = vertical_path
             clip.qc_status = "passed" if passed else "failed"
@@ -815,7 +862,7 @@ async def _stage_video_processing(video, db):
                     "severity": i.severity,
                     "recommendation": i.recommendation,
                 }
-                for i in combined_issues
+                for i in duration_qc.issues
             ]
 
         except Exception as e:
