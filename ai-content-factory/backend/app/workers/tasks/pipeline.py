@@ -583,81 +583,6 @@ async def _stage_ai_analysis(video, db):
     await db.commit()
 
 
-def _validate_clip_durations(clips, video_duration: float):
-    """
-    Validate each clip's duration against MOMENT_DURATION_RULES.
-    Returns (valid_clips, rejected_clips).
-    Attempts to extend short clips before rejecting.
-    """
-    from app.services.ai_brain import MOMENT_DURATION_RULES, FALLBACK_DURATION_RULE
-
-    valid = []
-    rejected = []
-
-    for clip in clips:
-        rule = MOMENT_DURATION_RULES.get(clip.moment_type, FALLBACK_DURATION_RULE)
-        duration = clip.end_time - clip.start_time
-
-        if duration < rule["min"]:
-            # Try to extend the clip
-            extended = _try_extend_clip(clip, rule, video_duration)
-            ext_duration = extended.end_time - extended.start_time
-            if ext_duration >= rule["min"]:
-                logger.info(
-                    f"[Validate] Extended {clip.moment_type} clip "
-                    f"{duration:.0f}s → {ext_duration:.0f}s"
-                )
-                valid.append(extended)
-            else:
-                rejected.append(clip)
-        elif duration > rule["max"]:
-            # Trim from end (preserve buildup + action, trim resolution tail)
-            from copy import copy
-
-            trimmed = copy(clip)
-            trimmed.end_time = clip.start_time + rule["max"]
-            valid.append(trimmed)
-        else:
-            valid.append(clip)
-
-    return valid, rejected
-
-
-def _try_extend_clip(clip, rule: dict, video_duration: float):
-    """
-    Try to extend a clip to meet minimum duration by pulling start earlier
-    and/or extending end. Distributes the deficit evenly between both sides.
-    Not limited by buildup/resolution hints — will extend as much as needed.
-    Returns modified clip copy.
-    """
-    from copy import copy
-
-    extended = copy(clip)
-    target = rule["min"]
-
-    # Distribute deficit evenly: half from start, half from end
-    for _ in range(10):  # iterate until stable
-        duration = extended.end_time - extended.start_time
-        if duration >= target:
-            break
-        deficit = target - duration
-        half = deficit / 2.0
-        new_start = max(0.0, extended.start_time - half)
-        new_end = min(video_duration, extended.end_time + half)
-        extended.start_time = new_start
-        extended.end_time = new_end
-        # If one side hit boundary, give remaining deficit to the other
-        duration = extended.end_time - extended.start_time
-        if duration < target:
-            remaining = target - duration
-            if extended.start_time > 0:
-                extended.start_time = max(0.0, extended.start_time - remaining)
-            else:
-                extended.end_time = min(video_duration, extended.end_time + remaining)
-
-    return extended
-
-
 async def _stage_qc_filtering(video, db):
     """Pre-cut QC: reject clips whose source frame is too dark (black screen / waiting screen)."""
     import asyncio
@@ -687,7 +612,8 @@ async def _stage_qc_filtering(video, db):
                     if brightness < 20:  # < 20/255 = mostly black
                         clip.qc_status = "failed"
                         clip.qc_issues = [{"type": "black_frame", "severity": "error",
-                                           "description": f"Source frame at {midpoint:.0f}s is black (brightness={brightness:.1f})"}]
+                                           "description": f"Source frame at {midpoint:.0f}s is black (brightness={brightness:.1f})",
+                                           "recommendation": "skip_or_shift_start"}]
                         rejected += 1
                         logger.debug(f"[QC] Rejected black clip {clip.id} at {midpoint:.0f}s (brightness={brightness:.1f})")
             except Exception as e:
@@ -896,7 +822,7 @@ async def _stage_video_processing(video, db):
             logger.error(f"[Pipeline] Failed to process clip {clip.id}: {e}")
             clip.qc_status = "failed"
             clip.qc_issues = [
-                {"type": "processing_error", "description": str(e), "severity": "error"}
+                {"type": "processing_error", "description": str(e), "severity": "error", "recommendation": ""}
             ]
 
         # Commit each clip immediately so progress is saved if pipeline crashes

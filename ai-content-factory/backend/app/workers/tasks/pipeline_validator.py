@@ -11,6 +11,7 @@ Four operations:
 """
 
 import copy
+import math
 from typing import List, Optional, Tuple
 
 from loguru import logger
@@ -249,10 +250,8 @@ def _try_split_clip(
     if duration <= max_duration:
         return [clip]
 
-    # How many parts do we need?
-    num_parts = max(2, int(duration // max_duration) + (
-        1 if duration % max_duration >= min_duration else 0
-    ))
+    # ceil guarantees every part fits within max_duration
+    num_parts = math.ceil(duration / max_duration)
     part_duration = duration / num_parts
 
     # Ensure each part is at least min_duration
