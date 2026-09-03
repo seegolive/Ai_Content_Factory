@@ -398,8 +398,18 @@ JANGAN mencari momen baru — hanya nilai kandidat yang diberikan.
 PRINSIP UTAMA: Lebih baik loloskan momen yang ternyata biasa daripada LEWATKAN momen yang bagus.
 Jika ragu → tetap include (is_clip: true).
 
+ATURAN KRITIS — KAPAN MEMULAI CLIP:
+❌ JANGAN mulai dari detik tepat sebelum ledakan/kill/puncak — penonton tidak tahu konteksnya
+✅ Mulai dari AWAL AKTIVITAS/SCENE yang relevan:
+   - Kendaraan (pesawat/tank/heli): mulai dari SAAT PERTAMA naik/masuk kendaraan
+   - Vehicle combat: dari "gue mau coba ini", "naik tank", "masuk heli" dll
+   - Achievement/level: dari saat streamer mulai mengejar tujuan
+   - Clutch/fight: dari saat pertama kali musuh terdeteksi atau engagement dimulai
+   - Prinsip: "kapan penonton perlu mulai nonton untuk mengerti payoff-nya?"
+
 Untuk setiap kandidat yang IS a good clip, tentukan:
 - start_time, end_time (dalam detik absolut dari awal video)
+  PENTING: start_time harus dari AWAL SCENE, bukan dari build-up dekat peak
 - peak_time: titik puncak/klimaks dalam clip
 - moment_type: clutch|funny|achievement|rage|epic|fail|tutorial
 - viral_score: 0-100
@@ -557,7 +567,9 @@ class AIBrainService:
             logger.warning("[AI] No candidates detected, falling back to windowed analysis")
             windows = self._build_windows(transcript.segments, transcript.duration)
         else:
-            contexts = self._build_candidate_contexts(transcript.segments, candidates)
+            contexts = self._build_candidate_contexts(
+                transcript.segments, candidates, context_before=180.0, context_after=90.0
+            )
             all_clips = await self._batch_evaluate_candidates(
                 contexts,
                 total_duration=transcript.duration,
@@ -774,6 +786,24 @@ class AIBrainService:
                 if "self_label" not in candidates[bucket]["sources"]:
                     candidates[bucket]["sources"].append("self_label")
                 candidates[bucket]["score"] += 5
+
+        # D. Activity-start keywords: vehicle boarding, new objective, etc.
+        # These signal the BEGINNING of a scene that may end in a peak
+        ACTIVITY_STARTS = [
+            "naik", "masuk", "coba", "ayo kita", "gue mau", "mau coba",
+            "ikut", "cobain", "gas", "next", "objective", "balik",
+            "spawn", "respawn", "revive",
+        ]
+        for seg in segments:
+            text_lower = seg.text.lower()
+            if any(kw in text_lower for kw in ACTIVITY_STARTS):
+                bucket = int(seg.start // min_gap)
+                if bucket not in candidates:
+                    candidates[bucket] = {"timestamp": seg.start, "sources": [], "score": 0}
+                if "activity_start" not in candidates[bucket]["sources"]:
+                    candidates[bucket]["sources"].append("activity_start")
+                # Lower score — only useful if AI finds a peak nearby
+                candidates[bucket]["score"] += 1
 
         result = sorted(candidates.values(), key=lambda c: c["timestamp"])
         logger.info(
