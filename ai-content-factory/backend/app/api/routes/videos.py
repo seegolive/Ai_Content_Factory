@@ -1,6 +1,7 @@
 """Video management API routes."""
 
 import os
+import shutil
 import uuid
 from typing import List, Optional
 
@@ -371,6 +372,15 @@ async def delete_video(
             os.remove(video.file_path)
         except Exception as e:
             logger.warning(f"Could not delete file {video.file_path}: {e}")
+
+    # Delete clips folder for this video (clips, enhanced files, audio, frames)
+    clips_dir = os.path.join(settings.LOCAL_STORAGE_PATH, "clips", str(video_id))
+    if os.path.exists(clips_dir):
+        try:
+            shutil.rmtree(clips_dir)
+            logger.info(f"Deleted clips directory: {clips_dir}")
+        except Exception as e:
+            logger.warning(f"Could not delete clips directory {clips_dir}: {e}")
 
     await db.delete(video)
     await db.commit()
