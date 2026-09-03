@@ -34,6 +34,15 @@ _REACTION_WEAK = frozenset([
 # Flat frozenset for backward compat (used in clip text scan)
 _REACTION_KEYWORDS = _REACTION_STRONG | _REACTION_MEDIUM | _REACTION_WEAK
 
+# Per-provider score calibration offsets (positive = provider scores too low)
+# Baseline: OpenRouter Gemini Flash. Empirically observed across gaming sessions.
+_PROVIDER_SCORE_OFFSETS: dict[str, int] = {
+    "OpenRouter Gemini Flash": 0,
+    "Groq": 10,            # consistently ~10pts conservative
+    "OpenRouter GPT-4o-mini": 3,
+    "Ollama qwen2.5:7b": 5,
+}
+
 # ── Duration rules per moment type (mirrored in frontend DurationBadge) ─────
 # All values within SHORTS_MIN_DURATION..SHORTS_MAX_DURATION
 MOMENT_DURATION_RULES = {
@@ -583,7 +592,7 @@ class AIBrainService:
             windows = self._build_windows(transcript.segments, transcript.duration)
         else:
             contexts = self._build_candidate_contexts(
-                transcript.segments, candidates, context_before=180.0, context_after=90.0
+                transcript.segments, candidates, context_after=90.0
             )
             all_clips = await self._batch_evaluate_candidates(
                 contexts,
@@ -863,7 +872,6 @@ class AIBrainService:
         self,
         segments: list,
         candidates: list,
-        context_before: float = 75.0,
         context_after: float = 90.0,
     ) -> list:
         """Extract FULL transcript context per candidate with adaptive expansion.
@@ -979,9 +987,12 @@ class AIBrainService:
             max_tokens = max(2000, len(batch) * 400)
 
             try:
-                content, _, _, _ = await self._call_with_fallback(
+                content, provider_name, _, _ = await self._call_with_fallback(
                     messages, max_tokens=max_tokens
                 )
+                score_offset = _PROVIDER_SCORE_OFFSETS.get(provider_name, 0)
+                if score_offset:
+                    logger.debug(f"[AI] Batch {batch_num}: applying +{score_offset} offset for {provider_name}")
                 raw = self._try_parse_clips(content)
                 if not raw:
                     logger.warning(f"[AI] Batch {batch_num} parse failed")
@@ -998,7 +1009,7 @@ class AIBrainService:
                         peak = float(ev.get("peak_time") or (start + end) / 2)
                         if not (start <= peak <= end):
                             peak = (start + end) / 2
-                        score = max(0, min(100, int(ev.get("viral_score", 50))))
+                        score = max(0, min(100, int(ev.get("viral_score", 50)) + score_offset))
                         mt = ev.get("moment_type", "epic")
                         if mt not in {"clutch","funny","achievement","rage","epic","fail","tutorial"}:
                             mt = "epic"
@@ -1144,6 +1155,10 @@ TRANSCRIPT:
         content, provider_name, model_used, tokens_used = \
             await self._call_with_fallback(messages, max_tokens=max_tokens)
 
+        score_offset = _PROVIDER_SCORE_OFFSETS.get(provider_name, 0)
+        if score_offset:
+            logger.debug(f"[AI] Single-pass: applying +{score_offset} offset for {provider_name}")
+
         clips_data = self._try_parse_clips(content)
         if clips_data is None:
             logger.warning("First parse failed, retrying with explicit JSON instruction")
@@ -1158,6 +1173,11 @@ TRANSCRIPT:
 
         raw = clips_data or {}
         clips = self._parse_clip_suggestions(raw)
+
+        # Apply provider calibration offset before rescore (keeps 75% weight on calibrated score)
+        if score_offset:
+            for clip in clips:
+                clip.viral_score = max(0, min(100, clip.viral_score + score_offset))
 
         # Quality check: retry once if response is poor quality
         min_acceptable = 2
@@ -1178,8 +1198,11 @@ TRANSCRIPT:
             try:
                 content, provider_name, model_used, tokens_used_retry = \
                     await self._call_with_fallback(messages, max_tokens=max_tokens)
-                retry_data = self._try_parse_clips(content)
-                retry_clips = self._parse_clip_suggestions(retry_data or {})
+                retry_offset = _PROVIDER_SCORE_OFFSETS.get(provider_name, 0)
+                retry_clips = self._parse_clip_suggestions(self._try_parse_clips(content) or {})
+                if retry_offset:
+                    for c in retry_clips:
+                        c.viral_score = max(0, min(100, c.viral_score + retry_offset))
                 if len(retry_clips) > len(clips):
                     clips = retry_clips
                     tokens_used += tokens_used_retry

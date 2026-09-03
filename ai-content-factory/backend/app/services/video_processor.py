@@ -390,52 +390,6 @@ class VideoProcessorService:
 
         return results
 
-    async def burn_subtitles(
-        self,
-        input_path: str,
-        transcript_segments: list,
-        output_path: str,
-        style: Optional[dict] = None,
-    ) -> str:
-        """Burn subtitles onto video."""
-        # Write SRT file
-        srt_path = output_path.replace(".mp4", ".srt")
-        with open(srt_path, "w", encoding="utf-8") as f:
-            for i, seg in enumerate(transcript_segments, 1):
-                start = _seconds_to_srt(seg["start"])
-                end = _seconds_to_srt(seg["end"])
-                f.write(f"{i}\n{start} --> {end}\n{seg['text']}\n\n")
-
-        # Subtitle style
-        font_size = style.get("font_size", 48) if style else 48
-        force_style = (
-            f"FontSize={font_size},FontName=Arial,Bold=1,"
-            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-            "Outline=2,Alignment=2"
-        )
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            input_path,
-            "-vf",
-            f"subtitles={srt_path}:force_style='{force_style}'",
-            "-c:v",
-            "libx264",
-            "-c:a",
-            "copy",
-            output_path,
-        ]
-        await self._run_ffmpeg(cmd)
-
-        try:
-            os.remove(srt_path)
-        except OSError:
-            pass
-
-        return output_path
-
     async def run_qc_check(self, clip_path: str) -> QCResult:
         """Run automated QC checks on a clip."""
         issues: List[QCIssue] = []
