@@ -308,13 +308,14 @@ async def _download_youtube_video(video, db):
     # Use cookies file if available (needed to bypass YouTube bot detection in Docker)
     cookies_path = os.path.join("storage", "youtube_cookies.txt")
 
-    # Map quality_preference to yt-dlp format string
+    # Map quality_preference to yt-dlp format string.
+    # bestvideo*+bestaudio* = any container (wildcard) ensures final fallback never fails.
     quality = getattr(video, "quality_preference", "1440p") or "1440p"
     quality_format_map = {
-        "1080p": "bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
-        "1440p": "bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
-        "2160p": "bestvideo[height>=2160]+bestaudio/bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best",
-        "best": "bestvideo+bestaudio/best",
+        "1080p": "bestvideo[height>=1080]+bestaudio/bestvideo*[height>=1080]+bestaudio*/bestvideo*+bestaudio*/best",
+        "1440p": "bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo*+bestaudio*/best",
+        "2160p": "bestvideo[height>=2160]+bestaudio/bestvideo[height>=1440]+bestaudio/bestvideo[height>=1080]+bestaudio/bestvideo*+bestaudio*/best",
+        "best": "bestvideo*+bestaudio*/best",
     }
     fmt = quality_format_map.get(quality, quality_format_map["1440p"])
 
