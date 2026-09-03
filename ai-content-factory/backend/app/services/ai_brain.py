@@ -16,16 +16,23 @@ from app.services.transcription import TranscriptResult
 SHORTS_MIN_DURATION = 60   # seconds
 SHORTS_MAX_DURATION = 180  # seconds (YouTube Shorts official limit)
 
-# Reaction keywords for objective signal scoring
-_REACTION_KEYWORDS = frozenset([
-    "anjir", "anjay", "njir", "wuih", "buset", "gila", "edan", "wtf", "gokil",
-    "yes", "yesss", "akhirnya", "berhasil", "mantap", "gg", "nice", "gas",
-    "kampret", "anjing", "tai", "bangsat", "curang", "elah", "kagak",
-    "aduh", "bahaya", "kabur", "cabut", "reset", "mati gue", "habis gue",
-    "serius", "gak nyangka", "beneran", "gimana bisa",
-    "wkwk", "hahaha", "kocak", "ngakak", "lucu",
-    "epic", "cinema", "cinematik", "gila sih", "sumpah",
+# Reaction keywords tiered by signal strength for objective scoring
+_REACTION_STRONG = frozenset([
+    "anjir", "anjay", "njir", "wtf", "mati gue", "habis gue",
+    "gak nyangka", "dari mana", "serius", "gimana bisa",
+    "bangsat", "kampret", "anjing", "no way", "what",
 ])
+_REACTION_MEDIUM = frozenset([
+    "gila", "edan", "wuih", "buset", "gokil", "hahaha", "wkwk",
+    "ngakak", "kocak", "akhirnya", "gila sih", "sumpah", "lucu",
+    "epic", "cinema", "cinematik",
+])
+_REACTION_WEAK = frozenset([
+    "yes", "gg", "nice", "mantap", "berhasil", "aduh",
+    "bahaya", "kabur", "cabut", "reset", "gas",
+])
+# Flat frozenset for backward compat (used in clip text scan)
+_REACTION_KEYWORDS = _REACTION_STRONG | _REACTION_MEDIUM | _REACTION_WEAK
 
 # ── Duration rules per moment type (mirrored in frontend DurationBadge) ─────
 # All values within SHORTS_MIN_DURATION..SHORTS_MAX_DURATION
@@ -561,13 +568,6 @@ class AIBrainService:
                 hype_markers=hype_markers,
             )
 
-        if transcript.duration <= self._MULTIPASS_THRESHOLD_S:
-            return await self._analyze_single_pass(
-                transcript.segments, transcript.duration, transcript.language,
-                transcript.word_count, channel_info, game_title, channel_name,
-                hype_markers=hype_markers,
-            )
-
         # ── High-recall pipeline for long videos ───────────────────────────
         # Phase 1: Detect ALL candidate timestamps (audio + keyword + self-label)
         # Phase 2: Expand each to full ±90s context (no sampling)
@@ -680,11 +680,12 @@ class AIBrainService:
         segments: list,
         hype_markers: list,
     ) -> List[ClipSuggestion]:
-        """Re-score clips using 60% AI score + 40% objective signals.
+        """Re-score clips using 75% AI score + 25% objective signals.
 
-        Objective signals (0-35 total):
-          - Audio peak overlap:  0-20 (how many hype windows intersect clip)
-          - Reaction keyword density: 0-15 (exclamation/gaming keywords in transcript)
+        Objective signals (0-35 total, weighted by strength):
+          - Audio peak overlap:  0-20
+          - Reaction density (strong×3 / medium×1.5 / weak×0.5): 0-15
+        AI score stays dominant to avoid penalizing quiet but excellent clips.
         """
         for clip in clips:
             hype_count = sum(
@@ -697,12 +698,18 @@ class AIBrainService:
                 s.text.lower() for s in segments
                 if clip.start_time <= s.start < clip.end_time
             )
-            reaction_hits = sum(clip_text.count(kw) for kw in _REACTION_KEYWORDS)
-            reaction_signal = min(15, reaction_hits * 2)
+            reaction_score = 0.0
+            for kw in _REACTION_STRONG:
+                reaction_score += clip_text.count(kw) * 3.0
+            for kw in _REACTION_MEDIUM:
+                reaction_score += clip_text.count(kw) * 1.5
+            for kw in _REACTION_WEAK:
+                reaction_score += clip_text.count(kw) * 0.5
+            reaction_signal = min(15, int(reaction_score))
 
             objective_norm = ((hype_signal + reaction_signal) / 35) * 100
             clip.viral_score = max(0, min(100, round(
-                0.6 * clip.viral_score + 0.4 * objective_norm
+                0.75 * clip.viral_score + 0.25 * objective_norm
             )))
 
         return clips
@@ -805,12 +812,12 @@ class AIBrainService:
                     candidates[bucket]["sources"].append("self_label")
                 candidates[bucket]["score"] += 5
 
-        # D. Activity-start keywords: vehicle boarding, new objective, etc.
-        # These signal the BEGINNING of a scene that may end in a peak
+        # D. Activity-start keywords: vehicle boarding, new objective — specific only
+        # Narrowed to avoid noise from generic words like 'gas', 'next', 'balik'
         ACTIVITY_STARTS = [
-            "naik", "masuk", "coba", "ayo kita", "gue mau", "mau coba",
-            "ikut", "cobain", "gas", "next", "objective", "balik",
-            "spawn", "respawn", "revive",
+            "naik pesawat", "naik heli", "naik tank", "masuk kendaraan",
+            "mau coba", "cobain dulu", "gue mau coba",
+            "spawn di", "respawn", "revive",
         ]
         for seg in segments:
             text_lower = seg.text.lower()
@@ -822,6 +829,26 @@ class AIBrainService:
                     candidates[bucket]["sources"].append("activity_start")
                 # Lower score — only useful if AI finds a peak nearby
                 candidates[bucket]["score"] += 1
+
+        # E. Speech density change: detect silence→burst transitions (silent flank moments)
+        # Segments grouped into 10s windows; find where density suddenly 2x increases
+        if segments:
+            window_s = 10.0
+            density: dict[int, int] = {}
+            for seg in segments:
+                b = int(seg.start // window_s)
+                density[b] = density.get(b, 0) + 1
+            buckets_sorted = sorted(density.keys())
+            for idx, b in enumerate(buckets_sorted[1:], 1):
+                prev_b = buckets_sorted[idx - 1]
+                if density[b] >= 2 * max(1, density.get(prev_b, 0)):
+                    ts = b * window_s
+                    bucket = int(ts // min_gap)
+                    if bucket not in candidates:
+                        candidates[bucket] = {"timestamp": ts, "sources": [], "score": 0}
+                    if "density_burst" not in candidates[bucket]["sources"]:
+                        candidates[bucket]["sources"].append("density_burst")
+                    candidates[bucket]["score"] += 2
 
         result = sorted(candidates.values(), key=lambda c: c["timestamp"])
         logger.info(
@@ -974,7 +1001,7 @@ class AIBrainService:
         return windows
 
     def _deduplicate_clips(self, clips: List[ClipSuggestion]) -> List[ClipSuggestion]:
-        """Remove clips that overlap >25% by IoU with a higher-scored clip."""
+        """Remove clips that overlap >35% by IoU with a higher-scored clip."""
         clips_sorted = sorted(clips, key=lambda c: c.viral_score, reverse=True)
         result: List[ClipSuggestion] = []
         for clip in clips_sorted:
@@ -989,8 +1016,8 @@ class AIBrainService:
                     intersection = overlap_end - overlap_start
                     union = max(clip.end_time, existing.end_time) - min(clip.start_time, existing.start_time)
                     shorter = min(clip_dur, existing.end_time - existing.start_time)
-                    # More aggressive: IoU > 0.25 OR covers >40% of shorter clip
-                    if union > 0 and (intersection / union > 0.25 or intersection / shorter > 0.40):
+                    # IoU > 0.35 OR covers >55% of shorter clip
+                    if union > 0 and (intersection / union > 0.35 or intersection / shorter > 0.55):
                         duplicate = True
                         break
             if not duplicate:
