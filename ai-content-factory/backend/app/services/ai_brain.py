@@ -866,14 +866,49 @@ class AIBrainService:
         context_before: float = 75.0,
         context_after: float = 90.0,
     ) -> list:
-        """Extract FULL transcript context for each candidate (no sampling).
+        """Extract FULL transcript context per candidate with adaptive expansion.
 
-        Returns list of context dicts ready for batch evaluation.
+        Context window scales with signal strength:
+          strong (audio+keyword or self_label): ±300s — covers long scene buildups
+          medium (audio or keyword alone):      ±180s — standard
+          weak (density_burst or activity):     ±90s  — tight window
+
+        Also adds coverage candidates for large gaps (>5min) between detected candidates
+        to guarantee no area of the stream is completely missed.
         """
+        # Coverage guarantee: add midpoint candidates for >5min uncovered gaps
+        covered = sorted(candidates, key=lambda c: c["timestamp"])
+        coverage_candidates = list(covered)
+        total_dur = segments[-1].end if segments else 0
+        gap_threshold = 300.0  # 5 minutes
+        # Scan gaps at start, between candidates, and at end
+        check_points = [0.0] + [c["timestamp"] for c in covered] + [total_dur]
+        for i in range(len(check_points) - 1):
+            gap = check_points[i + 1] - check_points[i]
+            if gap > gap_threshold:
+                # Insert a coverage candidate at the midpoint of the gap
+                mid = check_points[i] + gap / 2
+                coverage_candidates.append({
+                    "timestamp": mid, "sources": ["coverage"], "score": 0
+                })
+        coverage_candidates.sort(key=lambda c: c["timestamp"])
+
+        def _context_window(sources: list) -> float:
+            strong_signals = {"audio", "self_label"}
+            medium_signals = {"keyword", "density_burst"}
+            if any(s in strong_signals for s in sources) and len(sources) >= 2:
+                return 300.0  # long arc detection
+            if any(s in strong_signals for s in sources):
+                return 180.0
+            if any(s in medium_signals for s in sources):
+                return 90.0
+            return 90.0  # coverage / activity_start
+
         contexts = []
-        for i, cand in enumerate(candidates):
+        for i, cand in enumerate(coverage_candidates):
             ts = cand["timestamp"]
-            ctx_start = max(0.0, ts - context_before)
+            ctx_before = _context_window(cand.get("sources", []))
+            ctx_start = max(0.0, ts - ctx_before)
             ctx_end = ts + context_after
             ctx_segs = [s for s in segments if ctx_start <= s.start <= ctx_end]
             if not ctx_segs:
@@ -884,12 +919,18 @@ class AIBrainService:
             contexts.append({
                 "index": i,
                 "timestamp": ts,
-                "signals": cand["sources"],
+                "signals": cand.get("sources", []),
                 "score": cand.get("score", 0),
                 "ctx_start": ctx_start,
                 "ctx_end": ctx_end,
                 "transcript": transcript_text,
             })
+
+        covered_count = sum(1 for c in coverage_candidates if "coverage" not in c.get("sources", []))
+        gap_count = len(coverage_candidates) - covered_count
+        logger.info(
+            f"[AI] Contexts built: {covered_count} signal-based + {gap_count} coverage gaps"
+        )
         return contexts
 
     async def _batch_evaluate_candidates(
