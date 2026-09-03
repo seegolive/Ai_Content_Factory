@@ -223,13 +223,16 @@ ATURAN KERAS:
 ❌ Jangan potong saat reaksi emosional belum selesai
 ❌ Jangan mulai dari loading screen atau transisi
 ❌ SKIP section yang mengindikasikan stream belum mulai: "waiting", "starting soon", "be right back", "brb", "sebentar lagi", "bentar ya", "loading", "stream belum mulai" — section ini biasanya VIDEO HITAM
-❌ JANGAN mulai clip di timestamp PEAK/puncak — itu sudah di tengah momen, penonton tidak tahu konteksnya
-✅ Mulai dari CONTEXT — saat situasi baru mulai terbentuk (sebelum tension naik)
-✅ Clip harus terasa seperti cerita pendek yang lengkap, bukan potongan footage acak
-✅ Mulai 15-30 detik SEBELUM momen inti — saat suasana BARU MULAI memanas, bukan saat sudah panas
-✅ Cari kata/kalimat di transcript yang menandai AWAL tension: "nah ini...", "waduh...", "siap...", "ayo...", "eh ada", dll
-✅ Akhiri 10-20 detik SETELAH momen inti (reaksi selesai + natural pause)
-✅ Jika durasi di bawah 60 detik, WAJIB tambah buildup dan aftermath lebih banyak
+❌ JANGAN mulai clip di timestamp PEAK/puncak — penonton masuk tanpa konteks, payoff tidak berasa
+✅ Mulai dari AWAL MOMEN ITU DIBENTUK — kapan situasi yang mengarah ke payoff ini pertama kali muncul:
+   FUNNY:       dari setup/situasi awal yang bikin lucu, bukan saat sudah ketawa
+   RAGE:        dari situasi yang mulai bikin frustrasi, bukan saat sudah marah
+   CLUTCH:      dari saat musuh pertama kali terdeteksi atau perang dimulai
+   ACHIEVEMENT: dari saat streamer pertama kali mencoba/struggling mengejar tujuan
+   EPIC/VEHICLE:dari saat pertama kali masuk kendaraan atau mulai aksi
+   FAIL:        dari saat setup ekspektasi tinggi, bukan saat momen gagalnya
+✅ Tanya: "Kapan penonton perlu mulai nonton agar payoff-nya benar-benar memuaskan?"
+   Itulah start_time yang benar — bukan 15-30 detik sebelum peak, tapi dari ASAL-MUASAL scene
 
 DURASI LEBIH PANJANG DIUTAMAKAN JIKA:
 → Ada sequence multi-kill/multi-event (kill 1 → kill 2 → kill 3 → ace): panjangkan sampai seluruh arc selesai
@@ -398,18 +401,26 @@ JANGAN mencari momen baru — hanya nilai kandidat yang diberikan.
 PRINSIP UTAMA: Lebih baik loloskan momen yang ternyata biasa daripada LEWATKAN momen yang bagus.
 Jika ragu → tetap include (is_clip: true).
 
-ATURAN KRITIS — KAPAN MEMULAI CLIP:
-❌ JANGAN mulai dari detik tepat sebelum ledakan/kill/puncak — penonton tidak tahu konteksnya
-✅ Mulai dari AWAL AKTIVITAS/SCENE yang relevan:
-   - Kendaraan (pesawat/tank/heli): mulai dari SAAT PERTAMA naik/masuk kendaraan
-   - Vehicle combat: dari "gue mau coba ini", "naik tank", "masuk heli" dll
-   - Achievement/level: dari saat streamer mulai mengejar tujuan
-   - Clutch/fight: dari saat pertama kali musuh terdeteksi atau engagement dimulai
-   - Prinsip: "kapan penonton perlu mulai nonton untuk mengerti payoff-nya?"
+ATURAN KRITIS — KAPAN MEMULAI CLIP (universal untuk semua tipe momen):
+
+Prinsip: MULAI dari SAAT MOMEN ITU DIBENTUK, bukan saat momen itu terjadi.
+Penonton harus merasakan JOURNEY, bukan hanya melihat hasil akhir.
+
+  FUNNY:       dari setup situasi lucu ("gue mau coba ini..."), bukan saat sudah ketawa
+  RAGE:        dari situasi yang membangun frustrasi ("kok bisa sih?"), bukan saat sudah marah
+  CLUTCH:      dari saat musuh pertama kali terdeteksi ("ada orang..."), bukan kill terakhir
+  ACHIEVEMENT: dari saat pertama kali struggling ("tinggal X lagi..."), bukan saat berhasil
+  EPIC/VEHICLE:dari saat aksi dimulai ("naik", "masuk", "gas"), bukan saat ledakan/klimaks
+  FAIL:        dari setup ekspektasi tinggi ("gue yakin bisa..."), bukan momen gagal
+
+Tanya: "Kapan penonton perlu mulai nonton agar payoff-nya memuaskan?"
+Itulah start_time — bukan tepat sebelum puncak, tapi dari ASAL-MUASAL scene.
+
+PENTING: start_time harus dari AWAL SCENE/AKTIVITAS, bukan dari build-up dekat peak
+Context window yang diberikan SENGAJA PANJANG (3 menit) agar kamu bisa menemukan asal momen.
 
 Untuk setiap kandidat yang IS a good clip, tentukan:
 - start_time, end_time (dalam detik absolut dari awal video)
-  PENTING: start_time harus dari AWAL SCENE, bukan dari build-up dekat peak
 - peak_time: titik puncak/klimaks dalam clip
 - moment_type: clutch|funny|achievement|rage|epic|fail|tutorial
 - viral_score: 0-100
