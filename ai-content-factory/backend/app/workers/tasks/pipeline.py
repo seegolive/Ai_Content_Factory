@@ -350,8 +350,8 @@ async def _download_youtube_video(video, db):
                 except Exception:
                     pass  # Non-critical — progress display only
 
-    # visionos client: returns high-quality https formats without PO Token or SABR restrictions.
-    # android_vr/android/mweb now require GVS PO Token and are blocked by SABR experiment.
+    # tv_embedded + android_creator: no PO Token required, no cookies needed, up to 1920p.
+    # visionos kept as 3rd option for edge cases.
     ydl_opts = {
         "format": fmt,
         "outtmpl": output_path,
@@ -362,7 +362,7 @@ async def _download_youtube_video(video, db):
         "nopart": True,
         "overwrites": True,
         "extractor_args": {
-            "youtube": {"player_client": ["visionos", "web"]}
+            "youtube": {"player_client": ["tv_embedded", "android_creator", "visionos", "web"]}
         },
         "progress_hooks": [_progress_hook],
         "postprocessors": [
@@ -393,10 +393,10 @@ async def _download_youtube_video(video, db):
         except yt_dlp.utils.DownloadError as e:
             if "format is not available" in str(e) or "Requested format" in str(e):
                 logger.warning(
-                    f"[Pipeline] visionos client format unavailable — retrying with default client"
+                    f"[Pipeline] Primary client format unavailable — retrying with tv_embedded only"
                 )
                 fallback_opts = {**ydl_opts}
-                fallback_opts.pop("extractor_args", None)  # use yt-dlp default client
+                fallback_opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded"]}}
                 with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
                     return ydl2.extract_info(video.original_url, download=True)
             raise
